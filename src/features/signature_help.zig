@@ -15,18 +15,21 @@ fn fnProtoToSignatureInfo(
     arena: std.mem.Allocator,
     commas: u32,
     skip_self_param: bool,
-    func_type: Analyser.TypeWithHandle,
+    func_type: Analyser.Type,
+    markup_kind: types.MarkupKind,
 ) !types.SignatureInformation {
-    const tree = func_type.handle.tree;
-    const fn_node = func_type.type.data.other; // this assumes that function types can only be Ast nodes
+    const fn_node_handle = func_type.data.other; // this assumes that function types can only be Ast nodes
+    const fn_node = fn_node_handle.node;
+    const fn_handle = fn_node_handle.handle;
+    const tree = fn_handle.tree;
     var buffer: [1]Ast.Node.Index = undefined;
     const proto = tree.fullFnProto(&buffer, fn_node).?;
 
     const label = Analyser.getFunctionSignature(tree, proto);
-    const proto_comments = (try Analyser.getDocComments(arena, tree, fn_node)) orelse "";
+    const proto_comments = try Analyser.getDocComments(arena, tree, fn_node);
 
     const arg_idx = if (skip_self_param) blk: {
-        const has_self_param = try analyser.hasSelfParam(func_type.handle, proto);
+        const has_self_param = try analyser.hasSelfParam(func_type);
         break :blk commas + @intFromBool(has_self_param);
     } else commas;
 
@@ -36,49 +39,49 @@ fn fnProtoToSignatureInfo(
         const param_comments = if (param.first_doc_comment) |dc|
             try Analyser.collectDocComments(arena, tree, dc, false)
         else
-            "";
+            null;
 
         try params.append(arena, .{
             .label = .{ .string = ast.paramSlice(tree, param) },
-            .documentation = .{ .MarkupContent = .{
-                .kind = .markdown,
-                .value = param_comments,
-            } },
+            .documentation = if (param_comments) |comment| .{ .MarkupContent = .{
+                .kind = markup_kind,
+                .value = comment,
+            } } else null,
         });
     }
     return types.SignatureInformation{
         .label = label,
-        .documentation = .{ .MarkupContent = .{
-            .kind = .markdown,
-            .value = proto_comments,
-        } },
+        .documentation = if (proto_comments) |comment| .{ .MarkupContent = .{
+            .kind = markup_kind,
+            .value = comment,
+        } } else null,
         .parameters = params.items,
         .activeParameter = if (arg_idx < params.items.len) arg_idx else null,
     };
 }
 
-pub fn getSignatureInfo(analyser: *Analyser, arena: std.mem.Allocator, handle: *DocumentStore.Handle, absolute_index: usize) !?types.SignatureInformation {
+pub fn getSignatureInfo(
+    analyser: *Analyser,
+    arena: std.mem.Allocator,
+    handle: *DocumentStore.Handle,
+    absolute_index: usize,
+    markup_kind: types.MarkupKind,
+) !?types.SignatureInformation {
     const document_scope = try handle.getDocumentScope();
     const innermost_block = Analyser.innermostBlockScope(document_scope, absolute_index);
     const tree = handle.tree;
     const token_tags = tree.tokens.items(.tag);
-    const token_starts = tree.tokens.items(.start);
 
     // Use the innermost scope to determine the earliest token we would need
     //   to scan up to find a function or builtin call
     const first_token = tree.firstToken(innermost_block);
     // We start by finding the token that includes the current cursor position
     const last_token = blk: {
-        if (token_starts[0] >= absolute_index)
-            return null;
-
-        var i: u32 = 1;
-        while (i < token_tags.len) : (i += 1) {
-            if (token_starts[i] >= absolute_index) {
-                break :blk i - 1;
-            }
+        const last_token = offsets.sourceIndexToTokenIndex(tree, absolute_index);
+        switch (token_tags[last_token]) {
+            .l_brace, .l_paren, .l_bracket => break :blk last_token,
+            else => break :blk last_token -| 1,
         }
-        break :blk @as(u32, @truncate(token_tags.len - 1));
     };
 
     // We scan the tokens from last to first, adding and removing open and close
@@ -239,15 +242,16 @@ pub fn getSignatureInfo(analyser: *Analyser, arena: std.mem.Allocator, handle: *
 
                 const loc = offsets.tokensToLoc(tree, expr_first_token, expr_last_token);
 
-                var type_handle = try analyser.getFieldAccessType(handle, loc.start, loc) orelse continue;
+                var ty = try analyser.getFieldAccessType(handle, loc.start, loc) orelse continue;
 
-                if (try analyser.resolveFuncProtoOfCallable(type_handle)) |func_type| {
+                if (try analyser.resolveFuncProtoOfCallable(ty)) |func_type| {
                     return try fnProtoToSignatureInfo(
                         analyser,
                         arena,
                         paren_commas,
                         false,
                         func_type,
+                        markup_kind,
                     );
                 }
 
@@ -257,19 +261,20 @@ pub fn getSignatureInfo(analyser: *Analyser, arena: std.mem.Allocator, handle: *
                 };
                 const name = offsets.locToSlice(handle.tree.source, name_loc);
 
-                const skip_self_param = !type_handle.type.is_type_val;
-                type_handle = try analyser.resolveFieldAccess(type_handle, name) orelse {
+                const skip_self_param = !ty.is_type_val;
+                ty = try analyser.resolveFieldAccess(ty, name) orelse {
                     try symbol_stack.append(arena, .l_paren);
                     continue;
                 };
 
-                if (try analyser.resolveFuncProtoOfCallable(type_handle)) |func_type| {
+                if (try analyser.resolveFuncProtoOfCallable(ty)) |func_type| {
                     return try fnProtoToSignatureInfo(
                         analyser,
                         arena,
                         paren_commas,
                         skip_self_param,
                         func_type,
+                        markup_kind,
                     );
                 }
             },

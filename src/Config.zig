@@ -10,9 +10,6 @@ enable_snippets: bool = true,
 /// Whether to enable function argument placeholder completions
 enable_argument_placeholders: bool = true,
 
-/// Whether to enable ast-check diagnostics
-enable_ast_check_diagnostics: bool = true,
-
 /// Whether to enable build-on-save diagnostics
 enable_build_on_save: bool = false,
 
@@ -34,6 +31,9 @@ enable_inlay_hints: bool = true,
 
 /// Enable inlay hints for variable types
 inlay_hints_show_variable_type_hints: bool = true,
+
+/// Enable inlay hints for fields in struct and union literals
+inlay_hints_show_struct_literal_field_type: bool = true,
 
 /// Enable inlay hints for parameter names
 inlay_hints_show_parameter_name: bool = true,
@@ -62,17 +62,8 @@ dangerous_comptime_experiments_do_not_enable: bool = false,
 /// When true, skips searching for references in std. Improves lookup speed for functions in user's code. Renaming and go-to-definition will continue to work as is
 skip_std_references: bool = false,
 
-/// Can be used in conjuction with `enable_ast_check_diagnostics` to favor using `zig ast-check` instead of ZLS's fork
+/// Favor using `zig ast-check` instead of ZLS's fork
 prefer_ast_check_as_child_process: bool = true,
-
-/// When true, zls will record all request is receives and write in into `record_session_path`, so that they can replayed with `zls replay`
-record_session: bool = false,
-
-/// Output file path when `record_session` is set. The recommended file extension *.zlsreplay
-record_session_path: ?[]const u8 = null,
-
-/// Used when calling `zls replay` for specifying the replay file. If no extra argument is given `record_session_path` is used as the default path.
-replay_session_path: ?[]const u8 = null,
 
 /// Path to 'builtin;' useful for debugging, automatically set if let null
 builtin_path: ?[]const u8 = null,
@@ -92,7 +83,7 @@ global_cache_path: ?[]const u8 = null,
 /// Path to a directory that will be used as the global cache path when executing a projects build.zig. null is equivalent to the path shown by `zig env`
 build_runner_global_cache_path: ?[]const u8 = null,
 
-/// Completions confirm behavior. If 'true', replace the text after the cursor
-completions_with_replace: bool = true,
+/// When false, the function signature of completion results is hidden. Improves readability in some editors
+completion_label_details: bool = true,
 
 // DO NOT EDIT

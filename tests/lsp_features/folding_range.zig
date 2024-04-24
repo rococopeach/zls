@@ -8,11 +8,11 @@ const types = zls.types;
 
 const allocator: std.mem.Allocator = std.testing.allocator;
 
-test "foldingRange - empty" {
+test "empty" {
     try testFoldingRange("", &.{});
 }
 
-test "foldingRange - container type without members" {
+test "container type without members" {
     try testFoldingRange(
         \\const S = struct {
         \\};
@@ -28,7 +28,7 @@ test "foldingRange - container type without members" {
     });
 }
 
-test "foldingRange - doc comment" {
+test "doc comment" {
     try testFoldingRange(
         \\/// hello
         \\/// world
@@ -38,7 +38,7 @@ test "foldingRange - doc comment" {
     });
 }
 
-test "foldingRange - region" {
+test "region" {
     try testFoldingRange(
         \\const foo = 0;
         \\//#region
@@ -62,13 +62,13 @@ test "foldingRange - region" {
     });
 }
 
-test "foldingRange - if" {
+test "if" {
     try testFoldingRange(
         \\const foo = if (false) {
         \\
         \\};
     , &.{
-        .{ .startLine = 0, .startCharacter = 24, .endLine = 2, .endCharacter = 0 },
+        .{ .startLine = 0, .startCharacter = 24, .endLine = 1, .endCharacter = 0 },
     });
     try testFoldingRange(
         \\const foo = if (false) {
@@ -77,29 +77,50 @@ test "foldingRange - if" {
         \\
         \\};
     , &.{
-        .{ .startLine = 0, .startCharacter = 24, .endLine = 2, .endCharacter = 0 },
-        .{ .startLine = 2, .startCharacter = 8, .endLine = 4, .endCharacter = 0 },
+        .{ .startLine = 0, .startCharacter = 24, .endLine = 1, .endCharacter = 0 },
+        .{ .startLine = 2, .startCharacter = 8, .endLine = 3, .endCharacter = 0 },
     });
 }
 
-test "foldingRange - for/while" {
+test "for/while" {
     try testFoldingRange(
         \\const foo = for ("") |_| {
         \\
         \\};
     , &.{
-        .{ .startLine = 0, .startCharacter = 26, .endLine = 2, .endCharacter = 0 },
+        .{ .startLine = 0, .startCharacter = 26, .endLine = 1, .endCharacter = 0 },
+    });
+    try testFoldingRange(
+        \\const foo = for ("") |_| {
+        \\    return;
+        \\} else {
+        \\
+        \\};
+    , &.{
+        .{ .startLine = 0, .startCharacter = 26, .endLine = 1, .endCharacter = 11 },
+        .{ .startLine = 2, .startCharacter = 8, .endLine = 3, .endCharacter = 0 },
+    });
+
+    try testFoldingRange(
+        \\const foo = while (true) {
+        \\    //
+        \\};
+    , &.{
+        .{ .startLine = 0, .startCharacter = 26, .endLine = 1, .endCharacter = 6 },
     });
     try testFoldingRange(
         \\const foo = while (true) {
         \\
+        \\} else {
+        \\    //
         \\};
     , &.{
-        .{ .startLine = 0, .startCharacter = 26, .endLine = 2, .endCharacter = 0 },
+        .{ .startLine = 0, .startCharacter = 26, .endLine = 1, .endCharacter = 0 },
+        .{ .startLine = 2, .startCharacter = 8, .endLine = 3, .endCharacter = 6 },
     });
 }
 
-test "foldingRange - switch" {
+test "switch" {
     try testFoldingRange(
         \\const foo = switch (5) {
         \\    0 => {},
@@ -132,38 +153,35 @@ test "foldingRange - switch" {
     });
 }
 
-test "foldingRange - function" {
+test "function" {
     try testFoldingRange(
         \\fn main() u32 {
         \\    return 1 + 1;
         \\}
     , &.{
-        .{ .startLine = 0, .startCharacter = 15, .endLine = 2, .endCharacter = 0 },
+        .{ .startLine = 0, .startCharacter = 15, .endLine = 1, .endCharacter = 17 },
     });
     try testFoldingRange(
         \\fn main(
-        \\  a: ?u32,
-        \\  b: anytype,
+        \\    a: ?u32,
+        \\    b: anytype,
         \\) !u32 {}
     , &.{
-        .{ .startLine = 0, .startCharacter = 8, .endLine = 2, .endCharacter = 13 },
+        .{ .startLine = 0, .startCharacter = 8, .endLine = 2, .endCharacter = 15 },
     });
     try testFoldingRange(
         \\fn main(
-        \\  a: ?u32,
+        \\    a: ?u32,
         \\) !u32 {
         \\    return 1 + 1;
         \\}
     , &.{
-        .{ .startLine = 0, .startCharacter = 8, .endLine = 1, .endCharacter = 10 },
-        .{ .startLine = 2, .startCharacter = 8, .endLine = 4, .endCharacter = 0 },
-        // TODO investigate why VS-Code doesn't show the second folding range
-        // .{ .startLine = 0, .startCharacter = 8, .endLine = 2, .endCharacter = 0 },
-        // .{ .startLine = 2, .startCharacter = 8, .endLine = 4, .endCharacter = 0 },
+        .{ .startLine = 0, .startCharacter = 8, .endLine = 1, .endCharacter = 12 },
+        .{ .startLine = 2, .startCharacter = 8, .endLine = 3, .endCharacter = 17 },
     });
 }
 
-test "foldingRange - function with doc comment" {
+test "function with doc comment" {
     try testFoldingRange(
         \\/// this is
         \\/// a function
@@ -181,67 +199,67 @@ test "foldingRange - function with doc comment" {
     });
 }
 
-test "foldingRange - container decl" {
+test "container decl" {
     try testFoldingRange(
         \\const Foo = struct {
-        \\  alpha: u32,
-        \\  beta: []const u8,
+        \\    alpha: u32,
+        \\    beta: []const u8,
         \\};
     , &.{
         .{ .startLine = 0, .startCharacter = 20, .endLine = 3, .endCharacter = 0 },
     });
     try testFoldingRange(
         \\const Foo = struct {
-        \\  /// doc comment
-        \\  alpha: u32,
-        \\  // beta: []const u8,
+        \\    /// doc comment
+        \\    alpha: u32,
+        \\    // beta: []const u8,
         \\};
     , &.{
         .{ .startLine = 0, .startCharacter = 20, .endLine = 4, .endCharacter = 0 },
     });
     try testFoldingRange(
         \\const Foo = packed struct(u32) {
-        \\  alpha: u16,
-        \\  beta: u16,
+        \\    alpha: u16,
+        \\    beta: u16,
         \\};
     , &.{
         .{ .startLine = 0, .startCharacter = 32, .endLine = 3, .endCharacter = 0 },
     });
     try testFoldingRange(
         \\const Foo = union {
-        \\  alpha: u32,
-        \\  beta: []const u8,
+        \\    alpha: u32,
+        \\    beta: []const u8,
         \\};
     , &.{
         .{ .startLine = 0, .startCharacter = 19, .endLine = 3, .endCharacter = 0 },
     });
     try testFoldingRange(
         \\const Foo = union(enum) {
-        \\  alpha: u32,
-        \\  beta: []const u8,
+        \\    alpha: u32,
+        \\    beta: []const u8,
         \\};
     , &.{
         .{ .startLine = 0, .startCharacter = 25, .endLine = 3, .endCharacter = 0 },
     });
     try testFoldingRange(
         \\const Foo = struct {
-        \\  fn foo() void {}
+        \\    fn foo() void {}
         \\};
     , &.{
         .{ .startLine = 0, .startCharacter = 20, .endLine = 2, .endCharacter = 0 },
     });
     try testFoldingRange(
         \\const Foo = struct {
-        \\  fn foo() void {}
-        \\  fn bar() void {}
-        \\  // some comment
+        \\    fn foo() void {}
+        \\    fn bar() void {}
+        \\    // some comment
         \\};
     , &.{
         .{ .startLine = 0, .startCharacter = 20, .endLine = 4, .endCharacter = 0 },
     });
 }
 
-test "foldingRange - call" {
+test "call" {
     try testFoldingRange(
         \\extern fn foo(a: bool, b: ?usize) void;
         \\const result = foo(
@@ -253,7 +271,7 @@ test "foldingRange - call" {
     });
 }
 
-test "foldingRange - multi-line string literal" {
+test "multi-line string literal" {
     try testFoldingRange(
         \\const foo =
         \\    \\hello
@@ -264,7 +282,7 @@ test "foldingRange - multi-line string literal" {
     });
 }
 
-test "foldingRange - invalid condition within a `switch`" {
+test "invalid condition within a `switch`" {
     try testFoldingRange(
         \\switch (a.) {
         \\}
@@ -273,7 +291,7 @@ test "foldingRange - invalid condition within a `switch`" {
     });
 }
 
-test "foldingRange - weird code" {
+test "weird code" {
     // the expected output is irrelevant, just ensure no crash
     try testFoldingRange(
         \\if ( {fn foo()}

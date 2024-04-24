@@ -12,10 +12,9 @@ const ast = @import("../ast.zig");
 const offsets = @import("../offsets.zig");
 const URI = @import("../uri.zig");
 const code_actions = @import("code_actions.zig");
-const tracy = @import("../tracy.zig");
+const tracy = @import("tracy");
 
-const Module = @import("../stage2/Module.zig");
-const Zir = @import("../stage2/Zir.zig");
+const Zir = std.zig.Zir;
 
 pub fn generateDiagnostics(server: *Server, arena: std.mem.Allocator, handle: *DocumentStore.Handle) error{OutOfMemory}!types.PublishDiagnosticsParams {
     const tracy_zone = tracy.trace(@src());
@@ -41,7 +40,7 @@ pub fn generateDiagnostics(server: *Server, arena: std.mem.Allocator, handle: *D
         });
     }
 
-    if (server.config.enable_ast_check_diagnostics and tree.errors.len == 0) {
+    if (tree.errors.len == 0) {
         try getAstCheckDiagnostics(server, arena, handle, &diagnostics);
     }
 
@@ -252,21 +251,16 @@ pub fn generateBuildOnSaveDiagnostics(
         }
     }
 
-    const result = blk: {
-        server.zig_exe_lock.lock();
-        defer server.zig_exe_lock.unlock();
-
-        break :blk std.process.Child.run(.{
-            .allocator = server.allocator,
-            .argv = argv.items,
-            .cwd = workspace_path,
-            .max_output_bytes = 1024 * 1024,
-        }) catch |err| {
-            const joined = std.mem.join(server.allocator, " ", argv.items) catch return;
-            defer server.allocator.free(joined);
-            log.err("failed zig build command:\n{s}\nerror:{}\n", .{ joined, err });
-            return err;
-        };
+    const result = std.process.Child.run(.{
+        .allocator = server.allocator,
+        .argv = argv.items,
+        .cwd = workspace_path,
+        .max_output_bytes = 1024 * 1024,
+    }) catch |err| {
+        const joined = std.mem.join(server.allocator, " ", argv.items) catch return;
+        defer server.allocator.free(joined);
+        log.err("failed zig build command:\n{s}\nerror:{}\n", .{ joined, err });
+        return err;
     };
     defer server.allocator.free(result.stdout);
     defer server.allocator.free(result.stderr);
@@ -362,13 +356,38 @@ pub fn generateBuildOnSaveDiagnostics(
     }
 }
 
+pub fn getDiagnostics(
+    server: *Server,
+    arena: std.mem.Allocator,
+    handle: *DocumentStore.Handle,
+    diagnostics: *std.ArrayListUnmanaged(types.Diagnostic),
+) error{OutOfMemory}!void {
+    if (handle.tree.errors.len != 0) {
+        try diagnostics.ensureUnusedCapacity(arena, handle.tree.errors.len);
+
+        for (handle.tree.errors) |err| {
+            var buffer = std.ArrayListUnmanaged(u8){};
+            try handle.tree.renderError(err, buffer.writer(arena));
+
+            diagnostics.appendAssumeCapacity(.{
+                .range = offsets.tokenToRange(handle.tree, err.token, server.offset_encoding),
+                .severity = .Error,
+                .code = .{ .string = @tagName(err.tag) },
+                .source = "zls",
+                .message = try buffer.toOwnedSlice(arena),
+            });
+        }
+    } else {
+        try getAstCheckDiagnostics(server, arena, handle, diagnostics);
+    }
+}
+
 pub fn getAstCheckDiagnostics(
     server: *Server,
     arena: std.mem.Allocator,
     handle: *DocumentStore.Handle,
     diagnostics: *std.ArrayListUnmanaged(types.Diagnostic),
 ) error{OutOfMemory}!void {
-    std.debug.assert(server.config.enable_ast_check_diagnostics);
     std.debug.assert(handle.tree.errors.len == 0);
 
     if (server.config.prefer_ast_check_as_child_process and
@@ -395,11 +414,12 @@ fn getDiagnosticsFromAstCheck(
     const zig_exe_path = server.config.zig_exe_path.?;
 
     const stderr_bytes = blk: {
-        server.zig_exe_lock.lock();
-        defer server.zig_exe_lock.unlock();
+        server.zig_ast_check_lock.lock();
+        defer server.zig_ast_check_lock.unlock();
 
         var process = std.process.Child.init(&[_][]const u8{ zig_exe_path, "ast-check", "--color", "off" }, server.allocator);
         process.stdin_behavior = .Pipe;
+        process.stdout_behavior = .Ignore;
         process.stderr_behavior = .Pipe;
 
         process.spawn() catch |err| {
@@ -411,15 +431,19 @@ fn getDiagnosticsFromAstCheck(
 
         process.stdin = null;
 
-        const stderr_bytes = try process.stderr.?.reader().readAllAlloc(server.allocator, std.math.maxInt(usize));
+        const stderr_bytes = try process.stderr.?.readToEndAlloc(server.allocator, std.math.maxInt(usize));
         errdefer server.allocator.free(stderr_bytes);
 
         const term = process.wait() catch |err| {
             log.warn("Failed to await zig ast-check process, error: {}", .{err});
+            server.allocator.free(stderr_bytes);
             return;
         };
 
-        if (term != .Exited) return;
+        if (term != .Exited) {
+            server.allocator.free(stderr_bytes);
+            return;
+        }
         break :blk stderr_bytes;
     };
     defer server.allocator.free(stderr_bytes);

@@ -204,20 +204,30 @@ fn fullIfComponents(tree: Ast, info: full.If.Components) full.If {
         .ast = info,
         .payload_token = null,
         .error_token = null,
-        .else_token = undefined,
+        .else_token = 0,
     };
     // if (cond_expr) |x|
-    //              ^ ^
-    const payload_pipe = lastToken(tree, info.cond_expr) + 2;
-    if (token_tags[payload_pipe] == .pipe) {
-        result.payload_token = payload_pipe + 1;
+    //              ^  ^
+    const possible_payload_token = lastToken(tree, info.cond_expr) + 3;
+    const possible_payload_identifier_token = possible_payload_token + @intFromBool(token_tags[possible_payload_token] == .asterisk);
+    if (possible_payload_token < tree.tokens.len and
+        token_tags[possible_payload_token - 1] == .pipe and
+        token_tags[possible_payload_identifier_token] == .identifier)
+    {
+        result.payload_token = possible_payload_token;
     }
     if (info.else_expr != 0) {
         // then_expr else |x|
-        //           ^    ^
-        result.else_token = lastToken(tree, info.then_expr) + 1;
-        if (token_tags[result.else_token + 1] == .pipe) {
-            result.error_token = result.else_token + 2;
+        //           ^     ^
+        const possible_else_token = lastToken(tree, info.then_expr) + 1;
+        if (token_tags[possible_else_token] == .keyword_else) {
+            result.else_token = possible_else_token;
+            if (result.else_token + 2 < tree.tokens.len and
+                token_tags[result.else_token + 1] == .pipe and
+                token_tags[result.else_token + 2] == .identifier)
+            {
+                result.error_token = result.else_token + 2;
+            }
         }
     }
     return result;
@@ -253,7 +263,7 @@ fn fullWhileComponents(tree: Ast, info: full.While.Components) full.While {
         .inline_token = null,
         .label_token = null,
         .payload_token = null,
-        .else_token = undefined,
+        .else_token = 0,
         .error_token = null,
     };
     var tok_i = info.while_token -| 1;
@@ -266,16 +276,28 @@ fn fullWhileComponents(tree: Ast, info: full.While.Components) full.While {
     {
         result.label_token = tok_i -| 1;
     }
-    const last_cond_token = lastToken(tree, info.cond_expr);
-    if (token_tags[last_cond_token + 2] == .pipe) {
-        result.payload_token = last_cond_token + 3;
+    // while (cond_expr) |x|
+    //                 ^  ^
+    const possible_payload_token = lastToken(tree, info.cond_expr) + 3;
+    const possible_payload_identifier_token = possible_payload_token + @intFromBool(token_tags[possible_payload_token] == .asterisk);
+    if (possible_payload_token < tree.tokens.len and
+        token_tags[possible_payload_token - 1] == .pipe and
+        token_tags[possible_payload_identifier_token] == .identifier)
+    {
+        result.payload_token = possible_payload_token;
     }
     if (info.else_expr != 0) {
         // then_expr else |x|
-        //           ^    ^
-        result.else_token = lastToken(tree, info.then_expr) + 1;
-        if (token_tags[result.else_token + 1] == .pipe) {
-            result.error_token = result.else_token + 2;
+        //           ^     ^
+        const possible_else_token = lastToken(tree, info.then_expr) + 1;
+        if (token_tags[possible_else_token] == .keyword_else) {
+            result.else_token = possible_else_token;
+            if (result.else_token + 2 < tree.tokens.len and
+                token_tags[result.else_token + 1] == .pipe and
+                token_tags[result.else_token + 2] == .identifier)
+            {
+                result.error_token = result.else_token + 2;
+            }
         }
     }
     return result;
@@ -288,7 +310,7 @@ fn fullForComponents(tree: Ast, info: full.For.Components) full.For {
         .inline_token = null,
         .label_token = null,
         .payload_token = undefined,
-        .else_token = undefined,
+        .else_token = 0,
     };
     var tok_i = info.for_token -| 1;
     if (token_tags[tok_i] == .keyword_inline) {
@@ -303,7 +325,10 @@ fn fullForComponents(tree: Ast, info: full.For.Components) full.For {
     const last_cond_token = lastToken(tree, info.inputs[info.inputs.len - 1]);
     result.payload_token = last_cond_token + 3 + @intFromBool(token_tags[last_cond_token + 1] == .comma);
     if (info.else_expr != 0) {
-        result.else_token = lastToken(tree, info.then_expr) + 1;
+        const possible_else_token = lastToken(tree, info.then_expr) + 1;
+        if (token_tags[possible_else_token] == .keyword_else) {
+            result.else_token = possible_else_token;
+        }
     }
     return result;
 }
@@ -1206,6 +1231,47 @@ pub fn blockStatements(tree: Ast, node: Ast.Node.Index, buf: *[2]Ast.Node.Index)
     };
 }
 
+pub const ErrorSetIterator = struct {
+    token_tags: []const std.zig.Token.Tag,
+    current_token: Ast.TokenIndex,
+    last_token: Ast.TokenIndex,
+
+    pub fn init(tree: Ast, node: Ast.Node.Index) ErrorSetIterator {
+        std.debug.assert(tree.nodes.items(.tag)[node] == .error_set_decl);
+        return .{
+            .token_tags = tree.tokens.items(.tag),
+            .current_token = tree.nodes.items(.main_token)[node] + 2,
+            .last_token = tree.nodes.items(.data)[node].rhs,
+        };
+    }
+
+    pub fn next(it: *ErrorSetIterator) ?Ast.TokenIndex {
+        for (it.token_tags[it.current_token..it.last_token], it.current_token..) |tag, token| {
+            switch (tag) {
+                .doc_comment, .comma => {},
+                .identifier => {
+                    it.current_token = @min(token + 1, it.last_token);
+                    return @intCast(token);
+                },
+                else => {},
+            }
+        }
+        return null;
+    }
+};
+
+pub fn errorSetFieldCount(tree: Ast, node: Ast.Node.Index) usize {
+    std.debug.assert(tree.nodes.items(.tag)[node] == .error_set_decl);
+    const token_tags = tree.tokens.items(.tag);
+    const start = tree.nodes.items(.main_token)[node] + 2;
+    const end = tree.nodes.items(.data)[node].rhs;
+    var count: usize = 0;
+    for (token_tags[start..end]) |tag| {
+        count += @intFromBool(tag == .identifier);
+    }
+    return count;
+}
+
 /// Iterates over FnProto Params w/ added bounds check to support incomplete ast nodes
 pub fn nextFnParam(it: *Ast.full.FnProto.Iterator) ?Ast.full.FnProto.Param {
     const token_tags = it.tree.tokens.items(.tag);
@@ -1882,4 +1948,68 @@ pub fn smallestEnclosingSubrange(children: []const offsets.Loc, loc: offsets.Loc
         .start = start,
         .len = end - start,
     };
+}
+
+test smallestEnclosingSubrange {
+    const children = &[_]offsets.Loc{
+        .{ .start = 0, .end = 5 },
+        .{ .start = 5, .end = 10 },
+        .{ .start = 12, .end = 18 },
+        .{ .start = 18, .end = 22 },
+        .{ .start = 25, .end = 28 },
+    };
+
+    try std.testing.expect(smallestEnclosingSubrange(&.{}, undefined) == null);
+
+    // children  <-->
+    // loc       <--->
+    // result    null
+    try std.testing.expect(
+        smallestEnclosingSubrange(&.{.{ .start = 0, .end = 4 }}, .{ .start = 0, .end = 5 }) == null,
+    );
+
+    // children  <---><--->  <----><-->   <->
+    // loc       <---------------------------->
+    // result    null
+    try std.testing.expect(smallestEnclosingSubrange(children, .{ .start = 0, .end = 30 }) == null);
+
+    // children  <---><--->  <----><-->   <->
+    // loc             <--------->
+    // result         <--->  <---->
+    const result1 = smallestEnclosingSubrange(children, .{ .start = 6, .end = 17 }).?;
+    try std.testing.expectEqualSlices(
+        offsets.Loc,
+        children[1..3],
+        children[result1.start .. result1.start + result1.len],
+    );
+
+    // children  <---><--->  <----><-->   <->
+    // loc            <------------->
+    // result         <--->  <----><-->
+    const result2 = smallestEnclosingSubrange(children, .{ .start = 6, .end = 20 }).?;
+    try std.testing.expectEqualSlices(
+        offsets.Loc,
+        children[1..4],
+        children[result2.start .. result2.start + result2.len],
+    );
+
+    // children  <---><--->  <----><-->   <->
+    // loc                 <----------->
+    // result         <--->  <----><-->   <->
+    const result3 = smallestEnclosingSubrange(children, .{ .start = 10, .end = 23 }).?;
+    try std.testing.expectEqualSlices(
+        offsets.Loc,
+        children[1..5],
+        children[result3.start .. result3.start + result3.len],
+    );
+
+    // children  <---><--->  <----><-->   <->
+    // loc                 <>
+    // result         <--->  <---->
+    const result4 = smallestEnclosingSubrange(children, .{ .start = 10, .end = 12 }).?;
+    try std.testing.expectEqualSlices(
+        offsets.Loc,
+        children[1..3],
+        children[result4.start .. result4.start + result4.len],
+    );
 }

@@ -13,12 +13,6 @@
             "default": true
         },
         {
-            "name": "enable_ast_check_diagnostics",
-            "description": "Whether to enable ast-check diagnostics",
-            "type": "bool",
-            "default": true
-        },
-        {
             "name": "enable_build_on_save",
             "description": "Whether to enable build-on-save diagnostics",
             "type": "bool",
@@ -56,6 +50,12 @@
         {
             "name": "inlay_hints_show_variable_type_hints",
             "description": "Enable inlay hints for variable types",
+            "type": "bool",
+            "default": true
+        },
+        {
+            "name": "inlay_hints_show_struct_literal_field_type",
+            "description": "Enable inlay hints for fields in struct and union literals",
             "type": "bool",
             "default": true
         },
@@ -115,27 +115,9 @@
         },
         {
             "name": "prefer_ast_check_as_child_process",
-            "description": "Can be used in conjuction with `enable_ast_check_diagnostics` to favor using `zig ast-check` instead of ZLS's fork",
+            "description": "Favor using `zig ast-check` instead of ZLS's fork",
             "type": "bool",
             "default": true
-        },
-        {
-            "name": "record_session",
-            "description": "When true, zls will record all request is receives and write in into `record_session_path`, so that they can replayed with `zls replay`",
-            "type": "bool",
-            "default": false
-        },
-        {
-            "name": "record_session_path",
-            "description": "Output file path when `record_session` is set. The recommended file extension *.zlsreplay",
-            "type": "?[]const u8",
-            "default": null
-        },
-        {
-            "name": "replay_session_path",
-            "description": "Used when calling `zls replay` for specifying the replay file. If no extra argument is given `record_session_path` is used as the default path.",
-            "type": "?[]const u8",
-            "default": null
         },
         {
             "name": "builtin_path",
@@ -174,8 +156,8 @@
             "default": null
         },
         {
-            "name": "completions_with_replace",
-            "description": "Completions confirm behavior. If 'true', replace the text after the cursor",
+            "name": "completion_label_details",
+            "description": "When false, the function signature of completion results is hidden. Improves readability in some editors",
             "type": "bool",
             "default": true
         }

@@ -8,7 +8,7 @@ const offsets = zls.offsets;
 
 const allocator: std.mem.Allocator = std.testing.allocator;
 
-test "code actions - discard value" {
+test "discard value" {
     try testAutofix(
         \\test {
         \\    var foo = {};
@@ -27,7 +27,37 @@ test "code actions - discard value" {
     );
 }
 
-test "code actions - discard function parameter" {
+test "discard value with comments" {
+    try testAutofix(
+        \\test {
+        \\    const a = {}; // a comment
+        \\    const b = {} // a comment
+        \\    ;
+        \\    const c = // a comment
+        \\    {};
+        \\    const d // a comment
+        \\    = {};
+        \\}
+        \\
+    ,
+        \\test {
+        \\    const a = {}; // a comment
+        \\    _ = a; // autofix
+        \\    const b = {} // a comment
+        \\    ;
+        \\    _ = b; // autofix
+        \\    const c = // a comment
+        \\    {};
+        \\    _ = c; // autofix
+        \\    const d // a comment
+        \\    = {};
+        \\    _ = d; // autofix
+        \\}
+        \\
+    );
+}
+
+test "discard function parameter" {
     try testAutofix(
         \\fn foo(a: void, b: void, c: void) void {}
         \\
@@ -52,7 +82,32 @@ test "code actions - discard function parameter" {
     );
 }
 
-test "code actions - discard captures" {
+test "discard function parameter with comments" {
+    try testAutofix(
+        \\fn foo(a: void) void { // a comment
+        \\}
+        \\
+    ,
+        \\fn foo(a: void) void { // a comment
+        \\    _ = a; // autofix
+        \\}
+        \\
+    );
+    try testAutofix(
+        \\fn foo(a: void) void {
+        \\    // a comment
+        \\}
+        \\
+    ,
+        \\fn foo(a: void) void {
+        \\    _ = a; // autofix
+        \\    // a comment
+        \\}
+        \\
+    );
+}
+
+test "discard captures" {
     try testAutofix(
         \\test {
         \\    for (0..10, 0..10, 0..10) |i, j, k| {}
@@ -93,27 +148,81 @@ test "code actions - discard captures" {
     );
 }
 
-test "code actions - discard capture with comment" {
+test "discard capture with comment" {
+    try testAutofix(
+        \\test {
+        \\    if (1 == 1) |a| // a comment
+        \\    {}
+        \\    for (0..10, 0..10, 0..10) |i, j, k| // a commment
+        \\    {}
+        \\}
+        \\
+    ,
+        \\test {
+        \\    if (1 == 1) |a| // a comment
+        \\    {
+        \\        _ = a; // autofix
+        \\    }
+        \\    for (0..10, 0..10, 0..10) |i, j, k| // a commment
+        \\    {
+        \\        _ = i; // autofix
+        \\        _ = j; // autofix
+        \\        _ = k; // autofix
+        \\    }
+        \\}
+        \\
+    );
     try testAutofix(
         \\test {
         \\    if (1 == 1) |a|
-        \\    //a
+        \\    // a comment
+        \\    {}
+        \\    for (0..10, 0..10, 0..10) |i, j, k|
+        \\    // a commment
         \\    {}
         \\}
         \\
     ,
         \\test {
         \\    if (1 == 1) |a|
-        \\    //a
+        \\    // a comment
         \\    {
         \\        _ = a; // autofix
+        \\    }
+        \\    for (0..10, 0..10, 0..10) |i, j, k|
+        \\    // a commment
+        \\    {
+        \\        _ = i; // autofix
+        \\        _ = j; // autofix
+        \\        _ = k; // autofix
+        \\    }
+        \\}
+        \\
+    );
+    try testAutofix(
+        \\test {
+        \\    if (1 == 1) |a| { // a comment
+        \\    }
+        \\    for (0..10, 0..10, 0..10) |i, j, k| { // a commment
+        \\    }
+        \\}
+        \\
+    ,
+        \\test {
+        \\    if (1 == 1) |a| { // a comment
+        \\        _ = a; // autofix
+        \\    }
+        \\    for (0..10, 0..10, 0..10) |i, j, k| { // a commment
+        \\        _ = i; // autofix
+        \\        _ = j; // autofix
+        \\        _ = k; // autofix
         \\    }
         \\}
         \\
     );
 }
 
-test "code actions - discard capture - while loop with continue" {
+test "discard capture - while loop with continue" {
     try testAutofix(
         \\test {
         \\    var lines: ?[]const u8 = "";
@@ -168,7 +277,7 @@ test "code actions - discard capture - while loop with continue" {
     );
 }
 
-test "code actions - remove pointless discard" {
+test "remove pointless discard" {
     try testAutofix(
         \\fn foo(a: u32) u32 {
         \\    _ = a; // autofix
@@ -196,7 +305,7 @@ test "code actions - remove pointless discard" {
     );
 }
 
-test "code actions - remove discard of unknown identifier" {
+test "remove discard of unknown identifier" {
     try testAutofix(
         \\fn foo() void {
         \\    _ = a; // autofix
@@ -209,7 +318,7 @@ test "code actions - remove discard of unknown identifier" {
     );
 }
 
-test "code actions - ignore autofix comment whitespace" {
+test "ignore autofix comment whitespace" {
     try testAutofix(
         \\fn foo() void {
         \\    _ = a; // autofix
@@ -261,7 +370,6 @@ fn testAutofixOptions(before: []const u8, after: []const u8, want_zir: bool) !vo
     var ctx = try Context.init();
     defer ctx.deinit();
     ctx.server.config.enable_autofix = true;
-    ctx.server.config.enable_ast_check_diagnostics = true;
     ctx.server.config.prefer_ast_check_as_child_process = !want_zir;
 
     const uri = try ctx.addDocument(before);

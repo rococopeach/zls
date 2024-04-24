@@ -7,7 +7,7 @@ const ast = @import("../ast.zig");
 const types = @import("../lsp.zig");
 const offsets = @import("../offsets.zig");
 const URI = @import("../uri.zig");
-const tracy = @import("../tracy.zig");
+const tracy = @import("tracy");
 
 const Analyser = @import("../analysis.zig");
 const DocumentStore = @import("../DocumentStore.zig");
@@ -204,13 +204,13 @@ fn gotoDefinitionString(
     const uri = switch (pos_context) {
         .import_string_literal,
         .embedfile_string_literal,
-        => try document_store.uriFromImportStr(arena, handle.*, import_str),
+        => try document_store.uriFromImportStr(arena, handle, import_str),
         .cinclude_string_literal => try URI.fromPath(
             arena,
             blk: {
                 if (std.fs.path.isAbsolute(import_str)) break :blk import_str;
                 var include_dirs: std.ArrayListUnmanaged([]const u8) = .{};
-                _ = document_store.collectIncludeDirs(arena, handle.*, &include_dirs) catch |err| {
+                _ = document_store.collectIncludeDirs(arena, handle, &include_dirs) catch |err| {
                     log.err("failed to resolve include paths: {}", .{err});
                     return null;
                 };
@@ -248,7 +248,13 @@ pub fn gotoHandler(
     const handle = server.document_store.getHandle(request.textDocument.uri) orelse return null;
     const source_index = offsets.positionToIndex(handle.tree.source, request.position, server.offset_encoding);
 
-    var analyser = Analyser.init(server.allocator, &server.document_store, &server.ip, handle);
+    var analyser = Analyser.init(
+        server.allocator,
+        &server.document_store,
+        &server.ip,
+        handle,
+        server.config.dangerous_comptime_experiments_do_not_enable,
+    );
     defer analyser.deinit();
 
     const pos_context = try Analyser.getPositionContext(arena, handle.tree.source, source_index, true);

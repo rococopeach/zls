@@ -8,7 +8,6 @@ const Server = zls.Server;
 const types = zls.types;
 
 const default_config: Config = .{
-    .enable_ast_check_diagnostics = false,
     .semantic_tokens = .full,
     .enable_inlay_hints = true,
     .inlay_hints_exclude_single_argument = false,
@@ -66,7 +65,7 @@ pub const Context = struct {
         const params = types.DidOpenTextDocumentParams{
             .textDocument = .{
                 .uri = uri,
-                .languageId = "zig",
+                .languageId = .{ .custom_value = "zig" }, // no zig :(
                 .version = 420,
                 .text = source,
             },

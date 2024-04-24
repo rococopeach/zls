@@ -1,25 +1,24 @@
 name: Code Coverage
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - master
+  pull_request:
 
 jobs:
   coverage:
+    if: github.repository_owner == 'zigtools'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          submodules: true
+      - uses: actions/checkout@v4
 
       - uses: goto-bus-stop/setup-zig@v2
         with:
           version: master
+          cache: false
 
-      - run: zig version
       - run: zig env
-
-      - name: Build
-        run: zig build
 
       - name: Install kcov
         run: |
@@ -29,13 +28,12 @@ jobs:
       - name: Run Tests with kcov
         run: |
           kcov --version
-          zig build test -Dgenerate_coverage
-          
+          zig build test -Dgenerate_coverage --summary all
+
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          directory: zig-out/kcov/kcov-merged
+          directory: zig-out/coverage/kcov-merged
           fail_ci_if_error: true
           verbose: true
-

@@ -6,7 +6,7 @@ const ast = @import("../ast.zig");
 const types = @import("../lsp.zig");
 const offsets = @import("../offsets.zig");
 const URI = @import("../uri.zig");
-const tracy = @import("../tracy.zig");
+const tracy = @import("tracy");
 
 const Analyser = @import("../analysis.zig");
 const DocumentStore = @import("../DocumentStore.zig");
@@ -68,7 +68,7 @@ fn hoverSymbolRecursive(
                         &reference_collector,
                     );
 
-                break :def try Analyser.getVariableSignature(arena, tree, var_decl);
+                break :def try Analyser.getVariableSignature(arena, tree, var_decl, true);
             } else if (tree.fullFnProto(&buf, node)) |fn_proto| {
                 is_fn = true;
                 break :def Analyser.getFunctionSignature(tree, fn_proto);
@@ -81,12 +81,12 @@ fn hoverSymbolRecursive(
                         &reference_collector,
                     );
 
-                break :def Analyser.getContainerFieldSignature(tree, field);
+                break :def Analyser.getContainerFieldSignature(tree, field) orelse return null;
             } else {
                 break :def Analyser.nodeToString(tree, node) orelse return null;
             }
         },
-        .param_payload => |pay| def: {
+        .function_parameter => |pay| def: {
             const param = pay.get(tree).?;
 
             if (param.type_expr != 0) // zero for `anytype` and extern C varargs `...`
@@ -97,13 +97,13 @@ fn hoverSymbolRecursive(
 
             break :def ast.paramSlice(tree, param);
         },
-        .pointer_payload,
+        .optional_payload,
         .error_union_payload,
         .error_union_error,
-        .array_payload,
+        .for_loop_payload,
         .assign_destructure,
         .switch_payload,
-        .label_decl,
+        .label,
         .error_token,
         => tree.tokenSlice(decl_handle.nameToken()),
     };
@@ -114,9 +114,9 @@ fn hoverSymbolRecursive(
             try doc_strings.append(arena, doc);
         try analyser.referencedTypes(
             resolved_type,
-            &resolved_type_str,
             &reference_collector,
         );
+        resolved_type_str = try std.fmt.allocPrint(arena, "{}", .{resolved_type.fmt(analyser, .{ .truncate_container_decls = false })});
     }
     const referenced_types: []const Analyser.ReferencedType = type_references.keys();
 
@@ -187,7 +187,6 @@ fn hoverDefinitionBuiltin(
     offset_encoding: offsets.Encoding,
 ) error{OutOfMemory}!?types.Hover {
     _ = analyser;
-    _ = markup_kind;
     const tracy_zone = tracy.trace(@src());
     defer tracy_zone.end();
 
@@ -212,25 +211,45 @@ fn hoverDefinitionBuiltin(
 
         const source = handle.cimports.items(.source)[index];
 
-        try writer.print(
-            \\```c
-            \\{s}
-            \\```
-            \\
-        , .{source});
+        switch (markup_kind) {
+            .plaintext => {
+                try writer.print(
+                    \\{s}
+                    \\
+                , .{source});
+            },
+            .markdown => {
+                try writer.print(
+                    \\```c
+                    \\{s}
+                    \\```
+                    \\
+                , .{source});
+            },
+        }
     }
 
-    try writer.print(
-        \\```zig
-        \\{s}
-        \\```
-        \\{s}
-    , .{ builtin.signature, builtin.documentation });
+    switch (markup_kind) {
+        .plaintext => {
+            try writer.print(
+                \\{s}
+                \\{s}
+            , .{ builtin.signature, builtin.documentation });
+        },
+        .markdown => {
+            try writer.print(
+                \\```zig
+                \\{s}
+                \\```
+                \\{s}
+            , .{ builtin.signature, builtin.documentation });
+        },
+    }
 
     return types.Hover{
         .contents = .{
             .MarkupContent = .{
-                .kind = .markdown,
+                .kind = markup_kind,
                 .value = contents.items,
             },
         },
@@ -307,25 +326,21 @@ fn hoverDefinitionFieldAccess(
     const held_loc = offsets.locMerge(loc, name_loc);
     const decls = (try analyser.getSymbolFieldAccesses(arena, handle, source_index, held_loc, name)) orelse return null;
 
-    var content = std.ArrayListUnmanaged(types.MarkedString){};
+    var content = try std.ArrayListUnmanaged([]const u8).initCapacity(arena, decls.len);
 
     for (decls) |decl| {
-        try content.append(arena, .{
-            .string = (try hoverSymbol(analyser, arena, decl, markup_kind)) orelse continue,
-        });
+        content.appendAssumeCapacity(try hoverSymbol(analyser, arena, decl, markup_kind) orelse continue);
     }
 
-    // Yes, this is deprecated; the issue is that there's no better
-    // solution for multiple hover entries :(
     return .{
-        .contents = switch (content.items.len) {
-            0 => return null,
-            1 => .{ .MarkupContent = .{
-                .kind = .markdown,
-                .value = content.items[0].string,
-            } },
-            else => .{ .array_of_MarkedString = try content.toOwnedSlice(arena) },
-        },
+        .contents = .{ .MarkupContent = .{
+            .kind = markup_kind,
+            .value = switch (content.items.len) {
+                0 => return null,
+                1 => content.items[0],
+                else => try std.mem.join(arena, "\n\n", content.items),
+            },
+        } },
         .range = offsets.locToRange(handle.tree.source, name_loc, offset_encoding),
     };
 }

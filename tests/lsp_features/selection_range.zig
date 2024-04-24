@@ -11,16 +11,24 @@ const offsets = zls.offsets;
 
 const allocator: std.mem.Allocator = std.testing.allocator;
 
-test "selectionRange - empty" {
+test "empty" {
     try testSelectionRange("<>", &.{});
 }
 
-test "seletionRange - smoke" {
+test "smoke" {
     try testSelectionRange(
         \\fn main() void {
         \\    const x = 1 <>+ 1;
         \\}
     , &.{ "1 + 1", "const x = 1 + 1", "{\n    const x = 1 + 1;\n}" });
+}
+
+test "function parameter" {
+    try testSelectionRange(
+        \\fn f(x: i32, y: <>struct {}, z: f32) void {
+        \\
+        \\}
+    , &.{ "struct {}", "y: struct {}", "fn f(x: i32, y: struct {}, z: f32) void" });
 }
 
 fn testSelectionRange(source: []const u8, want: []const []const u8) !void {

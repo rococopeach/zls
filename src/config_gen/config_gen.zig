@@ -217,7 +217,7 @@ fn generateVSCodeConfigFile(allocator: std.mem.Allocator, config: Config, path: 
     var config_file = try std.fs.cwd().createFile(path, .{});
     defer config_file.close();
 
-    const predefined_configurations: usize = 3;
+    const predefined_configurations: usize = 4;
     var configuration: std.json.ArrayHashMap(ConfigurationProperty) = .{};
     try configuration.map.ensureTotalCapacity(allocator, @intCast(predefined_configurations + config.options.len));
     defer {
@@ -225,6 +225,11 @@ fn generateVSCodeConfigFile(allocator: std.mem.Allocator, config: Config, path: 
         configuration.map.deinit(allocator);
     }
 
+    configuration.map.putAssumeCapacityNoClobber("zig.zls.debugLog", .{
+        .scope = "resource",
+        .type = "boolean",
+        .description = "Enable debug logging in release builds of ZLS.",
+    });
     configuration.map.putAssumeCapacityNoClobber("zig.trace.server", .{
         .scope = "window",
         .type = "string",
@@ -940,18 +945,24 @@ const Response = union(enum) {
 };
 
 fn httpGET(allocator: std.mem.Allocator, uri: std.Uri) !Response {
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
-    try client.ca_bundle.rescan(allocator);
+    try client.initDefaultProxies(arena_allocator.allocator());
 
-    if (@hasDecl(std.http.Client, "loadDefaultProxies"))
-        try client.loadDefaultProxies();
+    var server_header_buffer: [1024]u8 = undefined;
 
-    var request = try client.open(.GET, uri, .{ .allocator = allocator }, .{});
+    var request = try client.open(
+        .GET,
+        uri,
+        .{ .server_header_buffer = &server_header_buffer },
+    );
     defer request.deinit();
 
-    try request.send(.{});
-    // try request.finish();
+    try request.send();
+    try request.finish();
     try request.wait();
 
     if (request.response.status.class() != .success) {

@@ -9,7 +9,7 @@ const offsets = zls.offsets;
 
 const allocator: std.mem.Allocator = std.testing.allocator;
 
-test "hover - literal" {
+test "literal" {
     try testHover(
         \\const f<cursor>oo = 42;
     ,
@@ -18,6 +18,56 @@ test "hover - literal" {
         \\```
         \\```zig
         \\(comptime_int)
+        \\```
+    );
+    try testHover(
+        \\const f<cursor>oo = true;
+    ,
+        \\```zig
+        \\const foo = true
+        \\```
+        \\```zig
+        \\(bool)
+        \\```
+    );
+    try testHover(
+        \\const f<cursor>oo = false;
+    ,
+        \\```zig
+        \\const foo = false
+        \\```
+        \\```zig
+        \\(bool)
+        \\```
+    );
+    try testHover(
+        \\const f<cursor>oo = null;
+    ,
+        \\```zig
+        \\const foo = null
+        \\```
+        \\```zig
+        \\(@TypeOf(null))
+        \\```
+    );
+    try testHover(
+        \\const f<cursor>oo = unreachable;
+    ,
+        \\```zig
+        \\const foo = unreachable
+        \\```
+        \\```zig
+        \\(noreturn)
+        \\```
+    );
+    try testHover(
+        \\const f<cursor>oo = undefined;
+    ,
+        \\```zig
+        \\const foo = undefined
+        \\```
+        \\```zig
+        \\(@TypeOf(undefined))
         \\```
     );
     try testHover(
@@ -31,10 +81,37 @@ test "hover - literal" {
         \\```
     );
     try testHover(
+        \\const f<cursor>oo = {};
+    ,
+        \\```zig
+        \\const foo = {}
+        \\```
+        \\```zig
+        \\(void)
+        \\```
+    );
+}
+
+test "string literal" {
+    try testHover(
         \\const f<cursor>oo = "ipsum lorem";
     ,
         \\```zig
         \\const foo = "ipsum lorem"
+        \\```
+        \\```zig
+        \\(*const [11:0]u8)
+        \\```
+    );
+    try testHover(
+        \\const f<cursor>oo =
+        \\    \\ipsum lorem
+        \\;
+    ,
+        \\```zig
+        \\const foo =
+        \\    \\ipsum lorem
+        \\
         \\```
         \\```zig
         \\(*const [11:0]u8)
@@ -56,9 +133,19 @@ test "hover - literal" {
         \\(*const [26:0]u8)
         \\```
     );
+    try testHover(
+        \\const f<cursor>oo = "hello".*;
+    ,
+        \\```zig
+        \\const foo = "hello".*
+        \\```
+        \\```zig
+        \\([5:0]u8)
+        \\```
+    );
 }
 
-test "hover - builtin" {
+test "builtin" {
     try testHover(
         \\@intFr<cursor>omBool(5);
     ,
@@ -67,9 +154,66 @@ test "hover - builtin" {
         \\```
         \\Converts `true` to `@as(u1, 1)` and `false` to `@as(u1, 0)`.
     );
+    try testHoverWithOptions(
+        \\@intFr<cursor>omBool(5);
+    ,
+        \\@intFromBool(value: bool) u1
+        \\Converts `true` to `@as(u1, 1)` and `false` to `@as(u1, 0)`.
+    , .{ .markup_kind = .plaintext });
 }
 
-test "hover - struct" {
+test "vector type" {
+    try testHover(
+        \\const u32<cursor>x4: @Vector(4, u32) = undefined;
+    ,
+        \\```zig
+        \\const u32x4: @Vector(4, u32) = undefined
+        \\```
+        \\```zig
+        \\(@Vector(4,u32))
+        \\```
+    );
+}
+
+test "negation" {
+    try testHover(
+        \\const f<cursor>oo = 1;
+        \\const f = -a;
+        \\const b = -%a;
+        \\const _ = <cursor>
+    ,
+        \\```zig
+        \\const foo = 1
+        \\```
+        \\```zig
+        \\(comptime_int)
+        \\```
+    );
+    try testHover(
+        \\const foo = 1;
+        \\const b<cursor>ar = -foo;
+    ,
+        \\```zig
+        \\const bar = -foo
+        \\```
+        \\```zig
+        \\(comptime_int)
+        \\```
+    );
+    try testHover(
+        \\const foo = 1;
+        \\const b<cursor>ar = -%foo;
+    ,
+        \\```zig
+        \\const bar = -%foo
+        \\```
+        \\```zig
+        \\(comptime_int)
+        \\```
+    );
+}
+
+test "struct" {
     try testHover(
         \\const Str<cursor>uct = packed struct(u32) {};
     ,
@@ -82,7 +226,7 @@ test "hover - struct" {
     );
 }
 
-test "hover - enum member" {
+test "enum member" {
     try testHover(
         \\const Enum = enum { foo, bar };
         \\const enum_member = Enum.f<cursor>oo;
@@ -98,7 +242,7 @@ test "hover - enum member" {
     );
 }
 
-test "hover - block label" {
+test "block label" {
     try testHover(
         \\const foo: i32 = undefined;
         \\const bar = b<cursor>az: {
@@ -127,7 +271,7 @@ test "hover - block label" {
     );
 }
 
-test "hover - if capture" {
+test "if capture" {
     try testHover(
         \\fn func() void {
         \\    const foo: ?i32 = undefined;
@@ -182,7 +326,7 @@ test "hover - if capture" {
     );
 }
 
-test "hover - while capture" {
+test "while capture" {
     try testHover(
         \\fn func() void {
         \\    const foo: ?i32 = undefined;
@@ -237,7 +381,7 @@ test "hover - while capture" {
     );
 }
 
-test "hover - catch capture" {
+test "catch capture" {
     try testHover(
         \\const foo: error{A}!i32 = undefined;
         \\const bar = foo catch |b<cursor>ar| undefined;
@@ -251,7 +395,7 @@ test "hover - catch capture" {
     );
 }
 
-test "hover - for capture" {
+test "for capture" {
     try testHover(
         \\fn func() void {
         \\    const foo: []i32 = undefined;
@@ -280,7 +424,7 @@ test "hover - for capture" {
     );
 }
 
-test "hover - enum literal" {
+test "enum literal" {
     try testHover(
         \\const E = enum { foo };
         \\const e: E = .f<cursor>oo;
@@ -296,7 +440,7 @@ test "hover - enum literal" {
     );
 }
 
-test "hover - switch capture" {
+test "switch capture" {
     try testHover(
         \\const U = union(enum) { a: i32 };
         \\fn func() void {
@@ -332,7 +476,7 @@ test "hover - switch capture" {
     );
 }
 
-test "hover - errdefer capture" {
+test "errdefer capture" {
     try testHover(
         \\fn func() error{A}!void {
         \\    errdefer |f<cursor>oo| {}
@@ -347,7 +491,7 @@ test "hover - errdefer capture" {
     );
 }
 
-test "hover - function" {
+test "function" {
     try testHover(
         \\const A = struct { a: i32 };
         \\const B = struct { b: bool };
@@ -396,7 +540,7 @@ test "hover - function" {
     , .{ .markup_kind = .plaintext });
 }
 
-test "hover - optional" {
+test "optional" {
     try testHover(
         \\const S = struct { a: i32 };
         \\const f<cursor>oo: ?S = undefined;
@@ -412,7 +556,7 @@ test "hover - optional" {
     );
 }
 
-test "hover - error union" {
+test "error union" {
     try testHover(
         \\const S = struct { a: i32 };
         \\const E = error { A, B };
@@ -429,7 +573,62 @@ test "hover - error union" {
     );
 }
 
-test "hover - var decl comments" {
+test "either types" {
+    try testHover(
+        \\const A = struct {
+        \\    ///small type
+        \\    pub const T = u32;
+        \\};
+        \\const B = struct {
+        \\    ///large type
+        \\    pub const T = u64;
+        \\};
+        \\const either = if (undefined) A else B;
+        \\const bar = either.<cursor>T;
+    ,
+        \\```zig
+        \\const T = u32
+        \\```
+        \\```zig
+        \\(type)
+        \\```
+        \\
+        \\small type
+        \\
+        \\```zig
+        \\const T = u64
+        \\```
+        \\```zig
+        \\(type)
+        \\```
+        \\
+        \\large type
+    );
+    try testHoverWithOptions(
+        \\const A = struct {
+        \\    ///small type
+        \\    pub const T = u32;
+        \\};
+        \\const B = struct {
+        \\    ///large type
+        \\    pub const T = u64;
+        \\};
+        \\const either = if (undefined) A else B;
+        \\const bar = either.<cursor>T;
+    ,
+        \\const T = u32
+        \\(type)
+        \\
+        \\small type
+        \\
+        \\const T = u64
+        \\(type)
+        \\
+        \\large type
+    , .{ .markup_kind = .plaintext });
+}
+
+test "var decl comments" {
     try testHover(
         \\///this is a comment
         \\const f<cursor>oo = 0 + 0;
@@ -445,7 +644,7 @@ test "hover - var decl comments" {
     );
 }
 
-test "hover - var decl alias" {
+test "var decl alias" {
     try testHover(
         \\extern fn foo() void;
         \\const b<cursor>ar = foo;
@@ -467,8 +666,62 @@ test "hover - var decl alias" {
     );
 }
 
+test "hover - destructuring" {
+    try testHover(
+        \\fn func() void {
+        \\    const f<cursor>oo, const bar = .{ 1, 2 };
+        \\}
+    ,
+        \\```zig
+        \\foo
+        \\```
+        \\```zig
+        \\(comptime_int)
+        \\```
+    );
+    try testHover(
+        \\fn func() void {
+        \\    const foo, const b<cursor>ar, const baz = .{ 1, 2, 3 };
+        \\}
+    ,
+        \\```zig
+        \\bar
+        \\```
+        \\```zig
+        \\(comptime_int)
+        \\```
+    );
+    try testHover(
+        \\fn thing() !struct {usize, isize} {
+        \\    return .{1, 2};
+        \\}
+        \\fn ex() void {
+        \\    const f<cursor>oo, const bar = try thing();
+        \\}
+    ,
+        \\```zig
+        \\foo
+        \\```
+        \\```zig
+        \\(usize)
+        \\```
+    );
+    try testHover(
+        \\fn func() void {
+        \\    const foo, const b<cursor>ar: u32, const baz = undefined;
+        \\}
+    ,
+        \\```zig
+        \\bar
+        \\```
+        \\```zig
+        \\(u32)
+        \\```
+    );
+}
+
 // https://github.com/zigtools/zls/issues/1378
-test "hover - type reference cycle" {
+test "type reference cycle" {
     try testHover(
         \\fn fo<cursor>o(
         \\    alpha: anytype,
@@ -486,7 +739,7 @@ test "hover - type reference cycle" {
     );
 }
 
-test "hover - integer overflow on top level container" {
+test "integer overflow on top level container" {
     try testHover(
         \\enum {  foo.bar: b<cursor>az,}
     ,
@@ -499,7 +752,7 @@ test "hover - integer overflow on top level container" {
     );
 }
 
-test "hover - combine doc comments of declaration and definition" {
+test "combine doc comments of declaration and definition" {
     try testHover(
         \\/// Foo
         \\const f<cursor>oo = bar.baz;
@@ -536,7 +789,7 @@ test "hover - combine doc comments of declaration and definition" {
     , .{ .markup_kind = .plaintext });
 }
 
-test "hover - top-level doc comment" {
+test "top-level doc comment" {
     try testHover(
         \\//! B
         \\
@@ -553,6 +806,19 @@ test "hover - top-level doc comment" {
         \\ A
         \\
         \\ B
+    );
+}
+
+test "deprecated" {
+    try testHover(
+        \\const f<cursor>oo = @compileError("some message");
+    ,
+        \\```zig
+        \\const foo = @compileError("some message")
+        \\```
+        \\```zig
+        \\(@compileError("some message"))
+        \\```
     );
 }
 
@@ -576,7 +842,7 @@ fn testHoverWithOptions(
 
     const test_uri = "file:///test.zig";
     try ctx.server.sendNotificationSync(ctx.arena.allocator(), "textDocument/didOpen", .{
-        .textDocument = .{ .uri = test_uri, .languageId = "zig", .version = 420, .text = text },
+        .textDocument = .{ .uri = test_uri, .languageId = .{ .custom_value = "zig" }, .version = 420, .text = text },
     });
 
     const params = types.HoverParams{

@@ -1,9 +1,9 @@
 const std = @import("std");
 const zig_builtin = @import("builtin");
 const builtin = @import("builtin");
-const Config = @import("Config.zig");
+const Config = @import("DocumentStore.zig").Config;
 const ast = @import("ast.zig");
-const tracy = @import("tracy.zig");
+const tracy = @import("tracy");
 const Ast = std.zig.Ast;
 const URI = @import("uri.zig");
 const ZCS = @import("ZigCompileServer.zig");
@@ -37,10 +37,9 @@ pub fn convertCInclude(allocator: std.mem.Allocator, tree: Ast, node: Ast.Node.I
     var output = std.ArrayListUnmanaged(u8){};
     errdefer output.deinit(allocator);
 
-    var stack_allocator = std.heap.stackFallback(512, allocator);
-
     var buffer: [2]Ast.Node.Index = undefined;
     for (ast.builtinCallParams(tree, node, &buffer).?) |child| {
+        var stack_allocator = std.heap.stackFallback(512, allocator);
         try convertCIncludeInternal(allocator, stack_allocator.get(), tree, child, &output);
     }
 

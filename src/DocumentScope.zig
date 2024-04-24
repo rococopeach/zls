@@ -1,8 +1,7 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 const Ast = std.zig.Ast;
-const types = @import("lsp.zig");
-const tracy = @import("tracy.zig");
+const tracy = @import("tracy");
 const offsets = @import("offsets.zig");
 const Analyser = @import("analysis.zig");
 const Declaration = Analyser.Declaration;
@@ -14,31 +13,36 @@ declarations: std.MultiArrayList(Declaration) = .{},
 /// used for looking up a child declaration in a given scope
 declaration_lookup_map: DeclarationLookupMap = .{},
 extra: std.ArrayListUnmanaged(u32) = .{},
-// TODO: make this lighter;
-// error completions: just store the name, the logic has no other moving parts
-// enum completions: same, but determine whether to store docs somewhere or fetch them on-demand (on-demand likely better)
-error_completions: CompletionSet = .{},
-enum_completions: CompletionSet = .{},
+/// All identifier token that are in error sets.
+/// When there are multiple error sets that contain the same error, only one of them is stored.
+/// A token that has a doc comment takes priority.
+/// This means that if there a multiple error sets with the same name, only one of them is included.
+global_error_set: IdentifierSet = .{},
+/// All identifier token that are in enums.
+/// When there are multiple enums that contain the field name, only one of them is stored.
+/// A token that has a doc comment takes priority.
+/// This means that if there a multiple enums with the same name, only one of them is included.
+global_enum_set: IdentifierSet = .{},
 
-const CompletionContext = struct {
-    pub fn hash(self: @This(), item: types.CompletionItem) u32 {
-        _ = self;
-        return @truncate(std.hash.Wyhash.hash(0, item.label));
+/// Stores a set of identifier tokens with unique names
+pub const IdentifierSet = std.ArrayHashMapUnmanaged(Ast.TokenIndex, void, IdentifierTokenContext, true);
+
+pub const IdentifierTokenContext = struct {
+    tree: Ast,
+
+    pub fn eql(self: @This(), a: Ast.TokenIndex, b: Ast.TokenIndex, b_index: usize) bool {
+        _ = b_index;
+        if (a == b) return true;
+        const a_name = offsets.identifierTokenToNameSlice(self.tree, a);
+        const b_name = offsets.identifierTokenToNameSlice(self.tree, b);
+        return std.mem.eql(u8, a_name, b_name);
     }
 
-    pub fn eql(self: @This(), a: types.CompletionItem, b: types.CompletionItem, b_index: usize) bool {
-        _ = self;
-        _ = b_index;
-        return std.mem.eql(u8, a.label, b.label);
+    pub fn hash(self: @This(), token: Ast.TokenIndex) u32 {
+        const name = offsets.identifierTokenToNameSlice(self.tree, token);
+        return std.array_hash_map.hashString(name);
     }
 };
-
-pub const CompletionSet = std.ArrayHashMapUnmanaged(
-    types.CompletionItem,
-    void,
-    CompletionContext,
-    false,
-);
 
 /// Every `index` inside this `ArrayhashMap` is equivalent to a `Declaration.Index`
 /// This means that every declaration is only the child of a single scope
@@ -74,7 +78,7 @@ pub const DeclarationLookupContext = struct {
 };
 
 pub const Scope = struct {
-    pub const Tag = enum {
+    pub const Tag = enum(u3) {
         /// `node_tags[ast_node]` is ContainerDecl or Root or ErrorSetDecl
         container,
         /// index into `DocumentScope.extra`
@@ -351,23 +355,8 @@ pub fn deinit(scope: *DocumentScope, allocator: std.mem.Allocator) void {
     scope.declaration_lookup_map.deinit(allocator);
     scope.extra.deinit(allocator);
 
-    for (scope.enum_completions.keys()) |item| {
-        if (item.detail) |detail| allocator.free(detail);
-        switch (item.documentation orelse continue) {
-            .string => |str| allocator.free(str),
-            .MarkupContent => |content| allocator.free(content.value),
-        }
-    }
-    scope.enum_completions.deinit(allocator);
-
-    for (scope.error_completions.keys()) |item| {
-        if (item.detail) |detail| allocator.free(detail);
-        switch (item.documentation orelse continue) {
-            .string => |str| allocator.free(str),
-            .MarkupContent => |content| allocator.free(content.value),
-        }
-    }
-    scope.error_completions.deinit(allocator);
+    scope.global_enum_set.deinit(allocator);
+    scope.global_error_set.deinit(allocator);
 }
 
 fn locToSmallLoc(loc: offsets.Loc) Scope.SmallLoc {
@@ -665,28 +654,27 @@ noinline fn walkContainerDecl(
                     continue;
                 }
 
-                if (token_tags[main_tokens[decl]] != .identifier) {
+                const main_token = main_tokens[decl];
+                if (token_tags[main_token] != .identifier) {
                     // TODO this code path should not be reachable
                     continue;
                 }
-                const name = offsets.identifierTokenToNameSlice(tree, main_tokens[decl]);
+                const name = offsets.identifierTokenToNameSlice(tree, main_token);
                 try scope.pushDeclaration(name, .{ .ast_node = decl }, .field);
 
                 if (is_enum_or_tagged_union) {
                     if (std.mem.eql(u8, name, "_")) continue;
 
-                    const doc = try Analyser.getDocComments(allocator, tree, decl);
-                    errdefer if (doc) |d| allocator.free(d);
-                    // TODO: Fix allocation; just store indices
-                    const gop_res = try context.doc_scope.enum_completions.getOrPut(allocator, .{
-                        .label = name,
-                        .kind = .EnumMember,
-                        .insertText = name,
-                        .insertTextFormat = .PlainText,
-                        .documentation = if (doc) |d| .{ .MarkupContent = types.MarkupContent{ .kind = .markdown, .value = d } } else null,
-                    });
-                    if (gop_res.found_existing) {
-                        if (doc) |d| allocator.free(d);
+                    const gop = try context.doc_scope.global_enum_set.getOrPutContext(
+                        context.allocator,
+                        main_token,
+                        IdentifierTokenContext{ .tree = tree },
+                    );
+                    if (!gop.found_existing) {
+                        gop.key_ptr.* = main_token;
+                    } else if (gop.found_existing and token_tags[main_token - 1] == .doc_comment) {
+                        // a token with a doc comment takes priority.
+                        gop.key_ptr.* = main_token;
                     }
                 }
             },
@@ -737,8 +725,6 @@ noinline fn walkErrorSetNode(
     node_idx: Ast.Node.Index,
 ) error{OutOfMemory}!void {
     const token_tags = tree.tokens.items(.tag);
-    const data = tree.nodes.items(.data);
-    const main_tokens = tree.nodes.items(.main_token);
 
     const scope = try context.startScope(
         .container,
@@ -746,27 +732,19 @@ noinline fn walkErrorSetNode(
         locToSmallLoc(offsets.nodeToLoc(tree, node_idx)),
     );
 
-    // All identifiers in main_token..data.rhs are error fields.
-    var tok_i = main_tokens[node_idx] + 2;
-    while (tok_i < data[node_idx].rhs) : (tok_i += 1) {
-        switch (token_tags[tok_i]) {
-            .doc_comment, .comma => {},
-            .identifier => {
-                const name = offsets.identifierTokenToNameSlice(tree, tok_i);
-                try scope.pushDeclaration(name, .{ .error_token = tok_i }, .other);
-                const gop = try context.doc_scope.error_completions.getOrPut(context.allocator, .{
-                    .label = name,
-                    .kind = .Constant,
-                    //.detail =
-                    .insertText = name,
-                    .insertTextFormat = .PlainText,
-                });
-                // TODO: use arena
-                if (!gop.found_existing) {
-                    gop.key_ptr.detail = try std.fmt.allocPrint(context.allocator, "error.{s}", .{name});
-                }
-            },
-            else => {},
+    var it = ast.ErrorSetIterator.init(tree, node_idx);
+
+    while (it.next()) |identifier_token| {
+        const name = offsets.identifierTokenToNameSlice(tree, identifier_token);
+        try scope.pushDeclaration(name, .{ .error_token = identifier_token }, .other);
+        const gop = try context.doc_scope.global_error_set.getOrPutContext(
+            context.allocator,
+            identifier_token,
+            IdentifierTokenContext{ .tree = tree },
+        );
+        if (!gop.found_existing or token_tags[identifier_token - 1] == .doc_comment) {
+            // a token with a doc comment takes priority.
+            gop.key_ptr.* = identifier_token;
         }
     }
 
@@ -796,7 +774,7 @@ noinline fn walkFuncNode(
         if (param.name_token) |name_token| {
             try scope.pushDeclaration(
                 offsets.identifierTokenToNameSlice(tree, name_token),
-                .{ .param_payload = .{ .param_index = param_index, .func = node_idx } },
+                .{ .function_parameter = .{ .param_index = param_index, .func = node_idx } },
                 .other,
             );
         }
@@ -845,7 +823,7 @@ fn walkBlockNodeKeepOpen(
     if (token_tags[first_token] == .identifier) {
         try scope.pushDeclaration(
             offsets.identifierTokenToNameSlice(tree, first_token),
-            .{ .label_decl = .{ .label = first_token, .block = node_idx } },
+            .{ .label = .{ .identifier = first_token, .block = node_idx } },
             .other,
         );
     }
@@ -900,9 +878,9 @@ noinline fn walkIfNode(
         const name = offsets.identifierTokenToNameSlice(tree, name_token);
 
         const decl: Declaration = if (if_node.error_token != null)
-            .{ .error_union_payload = .{ .name = name_token, .condition = if_node.ast.cond_expr } }
+            .{ .error_union_payload = .{ .identifier = name_token, .condition = if_node.ast.cond_expr } }
         else
-            .{ .pointer_payload = .{ .name = name_token, .condition = if_node.ast.cond_expr } };
+            .{ .optional_payload = .{ .identifier = name_token, .condition = if_node.ast.cond_expr } };
 
         const then_scope = try walkNodeEnsureScope(context, tree, if_node.ast.then_expr, name_token);
         try then_scope.pushDeclaration(name, decl, .other);
@@ -918,7 +896,7 @@ noinline fn walkIfNode(
             const else_scope = try walkNodeEnsureScope(context, tree, if_node.ast.else_expr, error_token);
             try else_scope.pushDeclaration(
                 name,
-                .{ .error_union_error = .{ .name = error_token, .condition = if_node.ast.cond_expr } },
+                .{ .error_union_error = .{ .identifier = error_token, .condition = if_node.ast.cond_expr } },
                 .other,
             );
             try else_scope.finalize();
@@ -940,7 +918,7 @@ noinline fn walkCatchNode(
     try walkNode(context, tree, data[node_idx].lhs);
 
     const catch_token = main_tokens[node_idx] + 2;
-    if (token_tags.len > catch_token and
+    if (catch_token < tree.tokens.len and
         token_tags[catch_token - 1] == .pipe and
         token_tags[catch_token] == .identifier)
     {
@@ -949,7 +927,7 @@ noinline fn walkCatchNode(
         const expr_scope = try walkNodeEnsureScope(context, tree, data[node_idx].rhs, catch_token);
         try expr_scope.pushDeclaration(
             name,
-            .{ .error_union_error = .{ .name = catch_token, .condition = data[node_idx].lhs } },
+            .{ .error_union_error = .{ .identifier = catch_token, .condition = data[node_idx].lhs } },
             .other,
         );
         try expr_scope.finalize();
@@ -981,9 +959,9 @@ noinline fn walkWhileNode(
         const name = offsets.identifierTokenToNameSlice(tree, name_token);
 
         const decl: Declaration = if (while_node.error_token != null)
-            .{ .error_union_payload = .{ .name = name_token, .condition = while_node.ast.cond_expr } }
+            .{ .error_union_payload = .{ .identifier = name_token, .condition = while_node.ast.cond_expr } }
         else
-            .{ .pointer_payload = .{ .name = name_token, .condition = while_node.ast.cond_expr } };
+            .{ .optional_payload = .{ .identifier = name_token, .condition = while_node.ast.cond_expr } };
         break :blk .{ decl, name };
     } else .{ null, null };
 
@@ -1004,7 +982,7 @@ noinline fn walkWhileNode(
         if (label_token) |label| {
             try then_scope.pushDeclaration(
                 label_name.?,
-                .{ .label_decl = .{ .label = label, .block = while_node.ast.then_expr } },
+                .{ .label = .{ .identifier = label, .block = while_node.ast.then_expr } },
                 .other,
             );
         }
@@ -1025,7 +1003,7 @@ noinline fn walkWhileNode(
             if (label_token) |label| {
                 try else_scope.pushDeclaration(
                     label_name.?,
-                    .{ .label_decl = .{ .label = label, .block = while_node.ast.then_expr } },
+                    .{ .label = .{ .identifier = label, .block = while_node.ast.then_expr } },
                     .other,
                 );
             }
@@ -1035,7 +1013,7 @@ noinline fn walkWhileNode(
 
                 try else_scope.pushDeclaration(
                     name,
-                    .{ .error_union_error = .{ .name = error_token, .condition = while_node.ast.cond_expr } },
+                    .{ .error_union_error = .{ .identifier = error_token, .condition = while_node.ast.cond_expr } },
                     .other,
                 );
             }
@@ -1073,7 +1051,7 @@ noinline fn walkForNode(
         if (tree.tokens.items(.tag)[name_token] != .identifier) break;
         try then_scope.pushDeclaration(
             offsets.identifierTokenToNameSlice(tree, name_token),
-            .{ .array_payload = .{ .identifier = name_token, .array_expr = input } },
+            .{ .for_loop_payload = .{ .identifier = name_token, .condition = input } },
             .other,
         );
     }
@@ -1086,7 +1064,7 @@ noinline fn walkForNode(
     if (for_node.label_token) |label_token| {
         try then_scope.pushDeclaration(
             label_name.?,
-            .{ .label_decl = .{ .label = label_token, .block = for_node.ast.then_expr } },
+            .{ .label = .{ .identifier = label_token, .block = for_node.ast.then_expr } },
             .other,
         );
     }
@@ -1098,7 +1076,7 @@ noinline fn walkForNode(
             const else_scope = try walkNodeEnsureScope(context, tree, for_node.ast.else_expr, tree.firstToken(for_node.ast.else_expr));
             try else_scope.pushDeclaration(
                 label_name.?,
-                .{ .label_decl = .{ .label = label_token, .block = for_node.ast.else_expr } },
+                .{ .label = .{ .identifier = label_token, .block = for_node.ast.else_expr } },
                 .other,
             );
             try else_scope.finalize();
@@ -1153,7 +1131,7 @@ noinline fn walkErrdeferNode(
         const expr_scope = try walkNodeEnsureScope(context, tree, data[node_idx].rhs, payload_token);
         try expr_scope.pushDeclaration(
             name,
-            .{ .error_union_error = .{ .name = payload_token, .condition = 0 } },
+            .{ .error_union_error = .{ .identifier = payload_token, .condition = 0 } },
             .other,
         );
         try expr_scope.finalize();

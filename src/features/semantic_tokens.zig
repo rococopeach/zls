@@ -222,12 +222,12 @@ fn fieldTokenType(
 
 fn colorIdentifierBasedOnType(
     builder: *Builder,
-    type_node: Analyser.TypeWithHandle,
+    type_node: Analyser.Type,
     target_tok: Ast.TokenIndex,
     is_parameter: bool,
     tok_mod: TokenModifiers,
 ) !void {
-    if (type_node.type.is_type_val) {
+    if (type_node.is_type_val) {
         const token_type: TokenType =
             if (type_node.isNamespace())
             .namespace
@@ -252,17 +252,16 @@ fn colorIdentifierBasedOnType(
         if (type_node.isGenericFunc()) {
             new_tok_mod.generic = true;
         }
-        const has_self_param = switch (type_node.type.data) {
-            .other => |node| blk: {
-                var buffer: [1]Ast.Node.Index = undefined;
-                const fn_proto = type_node.handle.tree.fullFnProto(&buffer, node).?;
-                break :blk try builder.analyser.hasSelfParam(type_node.handle, fn_proto);
-            },
-            else => false,
-        };
+
+        const has_self_param = try builder.analyser.hasSelfParam(type_node);
+
         try writeTokenMod(builder, target_tok, if (has_self_param) .method else .function, new_tok_mod);
     } else {
-        try writeTokenMod(builder, target_tok, if (is_parameter) .parameter else .variable, tok_mod);
+        var new_tok_mod = tok_mod;
+        if (type_node.data == .compile_error) {
+            new_tok_mod.deprecated = true;
+        }
+        try writeTokenMod(builder, target_tok, if (is_parameter) .parameter else .variable, new_tok_mod);
     }
 }
 
@@ -414,9 +413,14 @@ fn writeNodeTokens(builder: *Builder, node: Ast.Node.Index) error{OutOfMemory}!v
             try writeToken(builder, fn_proto.lib_name, .string);
             try writeToken(builder, fn_proto.ast.fn_token, .keyword);
 
+            const func_ty = Analyser.Type{
+                .data = .{ .other = .{ .node = node, .handle = handle } }, // this assumes that function types can only be Ast nodes
+                .is_type_val = true,
+            };
+
             const func_name_tok_type: TokenType = if (Analyser.isTypeFunction(tree, fn_proto))
                 .type
-            else if (try builder.analyser.hasSelfParam(builder.handle, fn_proto))
+            else if (try builder.analyser.hasSelfParam(func_ty))
                 .method
             else
                 .function;
@@ -602,8 +606,8 @@ fn writeNodeTokens(builder: *Builder, node: Ast.Node.Index) error{OutOfMemory}!v
 
                 field_token_type = if (try builder.analyser.resolveTypeOfNode(
                     .{ .node = struct_init.ast.type_expr, .handle = handle },
-                )) |struct_type| switch (struct_type.type.data) {
-                    .other => |n| fieldTokenType(n, struct_type.handle, false),
+                )) |struct_type| switch (struct_type.data) {
+                    .other => |node_handle| fieldTokenType(node_handle.node, node_handle.handle, false),
                     else => null,
                 } else null;
             }
@@ -852,6 +856,8 @@ fn writeNodeTokens(builder: *Builder, node: Ast.Node.Index) error{OutOfMemory}!v
             const data = node_data[node];
             if (data.rhs == 0) return;
 
+            const symbol_name = offsets.identifierTokenToNameSlice(tree, data.rhs);
+
             try writeNodeTokens(builder, data.lhs);
 
             // TODO This is basically exactly the same as what is done in analysis.resolveTypeOfNode, with the added
@@ -862,12 +868,12 @@ fn writeNodeTokens(builder: *Builder, node: Ast.Node.Index) error{OutOfMemory}!v
                 return;
             };
             const lhs_type = try builder.analyser.resolveDerefType(lhs) orelse lhs;
-            if (try lhs_type.lookupSymbol(builder.analyser, tree.tokenSlice(data.rhs))) |decl_type| {
+            if (try lhs_type.lookupSymbol(builder.analyser, symbol_name)) |decl_type| {
                 switch (decl_type.decl) {
                     .ast_node => |decl_node| {
                         if (decl_type.handle.tree.nodes.items(.tag)[decl_node].isContainerField()) {
-                            const tok_type = switch (lhs_type.type.data) {
-                                .other => |n| fieldTokenType(n, lhs_type.handle, lhs_type.type.is_type_val),
+                            const tok_type = switch (lhs_type.data) {
+                                .other => |node_handle| fieldTokenType(node_handle.node, node_handle.handle, lhs_type.is_type_val),
                                 else => null,
                             };
 
@@ -978,15 +984,10 @@ fn writeContainerField(builder: *Builder, node: Ast.Node.Index, container_decl: 
     }
 
     if (container_field.ast.value_expr != 0) {
-        const eq_tok: Ast.TokenIndex = if (container_field.ast.align_expr != 0)
-            ast.lastToken(tree, container_field.ast.align_expr) + 2
-        else if (container_field.ast.type_expr != 0)
-            ast.lastToken(tree, container_field.ast.type_expr) + 1
-        else
-            container_field.ast.main_token + 1;
-
-        std.debug.assert(token_tags[eq_tok] == .equal);
-        try writeToken(builder, eq_tok, .operator);
+        const equal_token = tree.firstToken(container_field.ast.value_expr) - 1;
+        if (token_tags[equal_token] == .equal) {
+            try writeToken(builder, equal_token, .operator);
+        }
         try writeNodeTokens(builder, container_field.ast.value_expr);
     }
 }
@@ -1011,7 +1012,7 @@ fn writeIdentifier(builder: *Builder, name_token: Ast.Node.Index) error{OutOfMem
         name,
         tree.tokens.items(.start)[name_token],
     )) |child| {
-        const is_param = child.decl == .param_payload;
+        const is_param = child.decl == .function_parameter;
 
         if (try child.resolveType(builder.analyser)) |decl_type| {
             return try colorIdentifierBasedOnType(builder, decl_type, name_token, is_param, .{});

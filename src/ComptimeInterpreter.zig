@@ -204,7 +204,7 @@ pub fn interpret(
                 .fields = .{},
                 .owner_decl = .none, // TODO
                 .namespace = container_namespace,
-                .layout = .Auto, // TODO
+                .layout = .auto, // TODO
                 .backing_int_ty = .none, // TODO
                 .status = .none, // TODO
             });
@@ -879,7 +879,7 @@ pub fn interpret(
                         .fields = .{},
                         .owner_decl = .none, // TODO
                         .namespace = .none,
-                        .layout = .Auto,
+                        .layout = .auto,
                         .backing_int_ty = .none,
                         .status = .none,
                     });
@@ -892,7 +892,11 @@ pub fn interpret(
                     } };
                 }
 
-                const import_uri = (try interpreter.document_store.uriFromImportStr(interpreter.allocator, interpreter.getHandle().*, import_str[1 .. import_str.len - 1])) orelse return error.ImportFailure;
+                const import_uri = (try interpreter.document_store.uriFromImportStr(
+                    interpreter.allocator,
+                    interpreter.getHandle(),
+                    import_str[1 .. import_str.len - 1],
+                )) orelse return error.ImportFailure;
                 defer interpreter.allocator.free(import_uri);
 
                 const import_handle = interpreter.document_store.getOrLoadHandle(import_uri) orelse return error.ImportFailure;
@@ -1103,7 +1107,7 @@ pub fn interpret(
         .async_call_one_comma,
         => {
             var params: [1]Ast.Node.Index = undefined;
-            const call_full = tree.fullCall(&params, node_idx) orelse unreachable;
+            const call_full = tree.fullCall(&params, node_idx).?;
 
             var args = try std.ArrayListUnmanaged(Value).initCapacity(interpreter.allocator, call_full.ast.params.len);
             defer args.deinit(interpreter.allocator);

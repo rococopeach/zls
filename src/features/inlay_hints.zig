@@ -7,16 +7,136 @@ const DocumentStore = @import("../DocumentStore.zig");
 const Analyser = @import("../analysis.zig");
 const types = @import("../lsp.zig");
 const offsets = @import("../offsets.zig");
-const tracy = @import("../tracy.zig");
+const tracy = @import("tracy");
 const ast = @import("../ast.zig");
 const Config = @import("../Config.zig");
 
 const data = @import("version_data");
 
-/// don't show inlay hints for the given builtin functions
-/// this option is rare and is therefore build-only and
-/// non-configurable at runtime
-pub const inlay_hints_exclude_builtins: []const u8 = &.{};
+/// don't show inlay hints for builtin functions whose parameter names carry no
+/// meaningful information or are trivial deductible based on the builtin name.
+const excluded_builtins_set = blk: {
+    @setEvalBranchQuota(2000);
+    break :blk std.ComptimeStringMap(void, &.{
+        .{"addrSpaceCast"},
+        .{"addWithOverflow"},
+        .{"alignCast"},
+        .{"alignOf"},
+        .{"as"},
+        // .{"atomicLoad"},
+        // .{"atomicRmw"},
+        // .{"atomicStore"},
+        .{"bitCast"},
+        .{"bitOffsetOf"},
+        .{"bitSizeOf"},
+        .{"breakpoint"}, // no parameters
+        // .{"mulAdd"},
+        .{"byteSwap"},
+        .{"bitReverse"},
+        .{"offsetOf"},
+        // .{"call"},
+        .{"cDefine"},
+        .{"cImport"},
+        .{"cInclude"},
+        .{"clz"},
+        // .{"cmpxchgStrong"},
+        // .{"cmpxchgWeak"},
+        // .{"compileError"},
+        .{"compileLog"}, // variadic
+        .{"constCast"},
+        .{"ctz"},
+        .{"cUndef"},
+        // .{"cVaArg"},
+        // .{"cVaCopy"},
+        // .{"cVaEnd"},
+        // .{"cVaStart"},
+        .{"divExact"},
+        .{"divFloor"},
+        .{"divTrunc"},
+        .{"embedFile"},
+        .{"enumFromInt"},
+        .{"errorFromInt"},
+        .{"errorName"},
+        .{"errorReturnTrace"}, // no parameters
+        .{"errorCast"},
+        // .{"export"},
+        // .{"extern"},
+        // .{"fence"},
+        // .{"field"},
+        // .{"fieldParentPtr"},
+        .{"floatCast"},
+        .{"floatFromInt"},
+        .{"frameAddress"}, // no parameters
+        // .{"hasDecl"},
+        // .{"hasField"},
+        .{"import"},
+        .{"inComptime"}, // no parameters
+        .{"intCast"},
+        .{"intFromBool"},
+        .{"intFromEnum"},
+        .{"intFromError"},
+        .{"intFromFloat"},
+        .{"intFromPtr"},
+        .{"max"},
+        // .{"memcpy"},
+        // .{"memset"},
+        .{"min"},
+        // .{"wasmMemorySize"},
+        // .{"wasmMemoryGrow"},
+        .{"mod"},
+        .{"mulWithOverflow"},
+        // .{"panic"},
+        .{"popCount"},
+        // .{"prefetch"},
+        .{"ptrCast"},
+        .{"ptrFromInt"},
+        .{"rem"},
+        .{"returnAddress"}, // no parameters
+        // .{"select"},
+        // .{"setAlignStack"},
+        .{"setCold"},
+        .{"setEvalBranchQuota"},
+        .{"setFloatMode"},
+        .{"setRuntimeSafety"},
+        // .{"shlExact"},
+        // .{"shlWithOverflow"},
+        // .{"shrExact"},
+        // .{"shuffle"},
+        .{"sizeOf"},
+        // .{"splat"},
+        // .{"reduce"},
+        .{"src"}, // no parameters
+        .{"sqrt"},
+        .{"sin"},
+        .{"cos"},
+        .{"tan"},
+        .{"exp"},
+        .{"exp2"},
+        .{"log"},
+        .{"log2"},
+        .{"log10"},
+        .{"abs"},
+        .{"floor"},
+        .{"ceil"},
+        .{"trunc"},
+        .{"round"},
+        .{"subWithOverflow"},
+        .{"tagName"},
+        .{"This"}, // no parameters
+        .{"trap"}, // no parameters
+        .{"truncate"},
+        .{"Type"},
+        .{"typeInfo"},
+        .{"typeName"},
+        .{"TypeOf"}, // variadic
+        // .{"unionInit"},
+        // .{"Vector"},
+        .{"volatileCast"},
+        // .{"workGroupId"},
+        // .{"workGroupSize"},
+        // .{"workItemId"},
+    });
+};
 
 pub const InlayHint = struct {
     index: usize,
@@ -91,68 +211,59 @@ const Builder = struct {
     }
 };
 
-/// `call` is the function call
-/// `decl_handle` should be a function protototype
 /// writes parameter hints into `builder.hints`
-fn writeCallHint(builder: *Builder, call: Ast.full.Call, decl_handle: Analyser.DeclWithHandle) !void {
+fn writeCallHint(
+    builder: *Builder,
+    /// The function call.
+    call: Ast.full.Call,
+) !void {
     const tracy_zone = tracy.trace(@src());
     defer tracy_zone.end();
 
     const handle = builder.handle;
     const tree = handle.tree;
 
-    const node = switch (decl_handle.decl) {
-        .ast_node => |node| node,
-        else => return,
-    };
-
-    const maybe_resolved_alias = try builder.analyser.resolveVarDeclAlias(.{ .node = node, .handle = decl_handle.handle });
-    const resolved_decl_handle = if (maybe_resolved_alias) |resolved_decl| resolved_decl else decl_handle;
-
-    const fn_node = switch (resolved_decl_handle.decl) {
-        .ast_node => |fn_node| fn_node,
-        else => return,
-    };
-
-    const decl_tree = resolved_decl_handle.handle.tree;
+    const ty = try builder.analyser.resolveTypeOfNode(.{ .node = call.ast.fn_expr, .handle = handle }) orelse return;
+    const fn_ty = try builder.analyser.resolveFuncProtoOfCallable(ty) orelse return;
+    const fn_node = fn_ty.data.other; // this assumes that function types can only be Ast nodes
 
     var buffer: [1]Ast.Node.Index = undefined;
-    const fn_proto = decl_tree.fullFnProto(&buffer, fn_node) orelse return;
+    const fn_proto = fn_node.handle.tree.fullFnProto(&buffer, fn_node.node).?;
 
     var params = try std.ArrayListUnmanaged(Ast.full.FnProto.Param).initCapacity(builder.arena, fn_proto.ast.params.len);
     defer params.deinit(builder.arena);
 
-    var it = fn_proto.iterate(&decl_tree);
+    var it = fn_proto.iterate(&fn_node.handle.tree);
     while (ast.nextFnParam(&it)) |param| {
         try params.append(builder.arena, param);
     }
 
     const has_self_param = call.ast.params.len + 1 == params.items.len and
-        try builder.analyser.isInstanceCall(handle, call, resolved_decl_handle.handle, fn_proto);
+        try builder.analyser.isInstanceCall(handle, call, fn_ty);
 
     const parameters = params.items[@intFromBool(has_self_param)..];
     const arguments = call.ast.params;
     const min_len = @min(parameters.len, arguments.len);
     for (parameters[0..min_len], arguments[0..min_len]) |param, arg| {
-        const name_token = param.name_token orelse continue;
-        const name = decl_tree.tokenSlice(name_token);
+        const parameter_name_token = param.name_token orelse continue;
+        const parameter_name = offsets.identifierTokenToNameSlice(fn_node.handle.tree, parameter_name_token);
 
-        if (builder.config.inlay_hints_hide_redundant_param_names or builder.config.inlay_hints_hide_redundant_param_names_last_token) {
-            const last_arg_token = ast.lastToken(tree, arg);
-            const arg_name = tree.tokenSlice(last_arg_token);
+        if (builder.config.inlay_hints_hide_redundant_param_names or builder.config.inlay_hints_hide_redundant_param_names_last_token) dont_skip: {
+            const arg_token = if (builder.config.inlay_hints_hide_redundant_param_names_last_token)
+                ast.lastToken(tree, arg)
+            else if (builder.config.inlay_hints_hide_redundant_param_names)
+                tree.nodes.items(.main_token)[arg]
+            else
+                unreachable;
 
-            if (std.mem.eql(u8, arg_name, name)) {
-                if (tree.firstToken(arg) == last_arg_token) {
-                    if (builder.config.inlay_hints_hide_redundant_param_names)
-                        continue;
-                } else {
-                    if (builder.config.inlay_hints_hide_redundant_param_names_last_token)
-                        continue;
-                }
-            }
+            if (tree.tokens.items(.tag)[arg_token] != .identifier) break :dont_skip;
+            const arg_token_name = offsets.identifierTokenToNameSlice(tree, arg_token);
+            if (!std.mem.eql(u8, parameter_name, arg_token_name)) break :dont_skip;
+
+            continue;
         }
 
-        const token_tags = decl_tree.tokens.items(.tag);
+        const token_tags = fn_node.handle.tree.tokens.items(.tag);
 
         const no_alias = if (param.comptime_noalias) |t| token_tags[t] == .keyword_noalias or token_tags[t - 1] == .keyword_noalias else false;
         const comp_time = if (param.comptime_noalias) |t| token_tags[t] == .keyword_comptime or token_tags[t - 1] == .keyword_comptime else false;
@@ -160,11 +271,11 @@ fn writeCallHint(builder: *Builder, call: Ast.full.Call, decl_handle: Analyser.D
         const tooltip = if (param.anytype_ellipsis3) |token|
             if (token_tags[token] == .keyword_anytype) "anytype" else ""
         else
-            offsets.nodeToSlice(decl_tree, param.type_expr);
+            offsets.nodeToSlice(fn_node.handle.tree, param.type_expr);
 
         try builder.appendParameterHint(
             tree.firstToken(arg),
-            name,
+            parameter_name,
             tooltip,
             no_alias,
             comp_time,
@@ -213,41 +324,15 @@ fn writeBuiltinHint(builder: *Builder, parameters: []const Ast.Node.Index, argum
     }
 }
 
-// Restrict whitespace to only one space at a time.
-// TODO: Reduce long type hints (>x characters) to just the overall type i.e. `struct { .. }`.
-fn reduceTypeWhitespace(str: []const u8, arena: std.mem.Allocator) ![]const u8 {
-    // Overallocates by a small amount if whitespace is reduced, but it should be fine.
-    var reduced_type_str = try std.ArrayListUnmanaged(u8).initCapacity(arena, str.len);
-    var skip = false;
-    for (str) |char| {
-        if (char == '\n' or char == ' ') {
-            if (!skip) {
-                reduced_type_str.appendAssumeCapacity(' ');
-            }
-            skip = true;
-        } else {
-            reduced_type_str.appendAssumeCapacity(char);
-            skip = false;
-        }
-    }
-    return reduced_type_str.items;
-}
-
 fn typeStrOfNode(builder: *Builder, node: Ast.Node.Index) !?[]const u8 {
     const resolved_type = try builder.analyser.resolveTypeOfNode(.{ .handle = builder.handle, .node = node }) orelse return null;
 
-    var type_references = Analyser.ReferencedType.Set.init(builder.arena);
-    var reference_collector = Analyser.ReferencedType.Collector.init(&type_references);
-
-    var type_str: []const u8 = "";
-    try builder.analyser.referencedTypes(
-        resolved_type,
-        &type_str,
-        &reference_collector,
+    const type_str: []const u8 = try std.fmt.allocPrint(
+        builder.arena,
+        "{}",
+        .{resolved_type.fmt(builder.analyser, .{ .truncate_container_decls = true })},
     );
     if (type_str.len == 0) return null;
-
-    type_str = try reduceTypeWhitespace(type_str, builder.arena);
 
     return type_str;
 }
@@ -260,18 +345,14 @@ fn typeStrOfToken(builder: *Builder, token: Ast.TokenIndex) !?[]const u8 {
     ) orelse return null;
     const resolved_type = try things.resolveType(builder.analyser) orelse return null;
 
-    var type_references = Analyser.ReferencedType.Set.init(builder.arena);
-    var reference_collector = Analyser.ReferencedType.Collector.init(&type_references);
-
-    var type_str: []const u8 = "";
-    try builder.analyser.referencedTypes(
-        resolved_type,
-        &type_str,
-        &reference_collector,
+    const type_str: []const u8 = try std.fmt.allocPrint(
+        builder.arena,
+        "{}",
+        .{resolved_type.fmt(builder.analyser, .{ .truncate_container_decls = true })},
     );
     if (type_str.len == 0) return null;
 
-    return try reduceTypeWhitespace(type_str, builder.arena);
+    return type_str;
 }
 
 /// Append a hint in the form `: hint`
@@ -300,7 +381,7 @@ fn writeForCaptureHint(builder: *Builder, for_node: Ast.Node.Index) !void {
     defer tracy_zone.end();
 
     const tree = builder.handle.tree;
-    const full_for = tree.fullFor(for_node).?;
+    const full_for = ast.fullFor(tree, for_node).?;
     const token_tags = tree.tokens.items(.tag);
     var capture_token = full_for.payload_token;
     for (full_for.ast.inputs) |_| {
@@ -330,41 +411,9 @@ fn writeCallNodeHint(builder: *Builder, call: Ast.full.Call) !void {
     const handle = builder.handle;
     const tree = handle.tree;
     const node_tags = tree.nodes.items(.tag);
-    const node_data = tree.nodes.items(.data);
-    const main_tokens = tree.nodes.items(.main_token);
-    const token_tags = tree.tokens.items(.tag);
 
     switch (node_tags[call.ast.fn_expr]) {
-        .identifier => {
-            const name_token = main_tokens[call.ast.fn_expr];
-            const name = offsets.identifierTokenToNameSlice(tree, name_token);
-            const source_index = offsets.tokenToIndex(tree, name_token);
-
-            if (try builder.analyser.lookupSymbolGlobal(handle, name, source_index)) |decl_handle| {
-                try writeCallHint(builder, call, decl_handle);
-            }
-        },
-        .field_access => {
-            const lhsToken = tree.firstToken(call.ast.fn_expr);
-            const rhsToken = node_data[call.ast.fn_expr].rhs;
-            std.debug.assert(token_tags[rhsToken] == .identifier);
-
-            const start = offsets.tokenToIndex(tree, lhsToken);
-            const rhs_loc = offsets.tokenToLoc(tree, rhsToken);
-
-            // note: we have the ast node, traversing it would probably yield better results
-            // than trying to re-tokenize and re-parse it
-            if (try builder.analyser.getFieldAccessType(handle, rhs_loc.end, .{
-                .start = start,
-                .end = rhs_loc.end,
-            })) |type_handle| {
-                const container_handle = try builder.analyser.resolveDerefType(type_handle) orelse type_handle;
-                const symbol = offsets.identifierTokenToNameSlice(tree, rhsToken);
-                if (try container_handle.lookupSymbol(builder.analyser, symbol)) |decl_handle| {
-                    try writeCallHint(builder, call, decl_handle);
-                }
-            }
-        },
+        .identifier, .field_access => try writeCallHint(builder, call),
         else => {
             log.debug("cannot deduce fn expression with tag '{}'", .{node_tags[call.ast.fn_expr]});
         },
@@ -378,6 +427,7 @@ fn writeNodeInlayHint(
 ) error{OutOfMemory}!void {
     const node_tags = tree.nodes.items(.tag);
     const main_tokens = tree.nodes.items(.main_token);
+    const token_tags = tree.tokens.items(.tag);
 
     const tag = node_tags[node];
 
@@ -412,6 +462,18 @@ fn writeNodeInlayHint(
                 try typeStrOfNode(builder, node) orelse return,
             );
         },
+        .assign_destructure => {
+            if (!builder.config.inlay_hints_show_variable_type_hints) return;
+            const dat = tree.nodes.items(.data);
+            const lhs_count = tree.extra_data[dat[node].lhs];
+            const lhs_exprs = tree.extra_data[dat[node].lhs + 1 ..][0..lhs_count];
+
+            for (lhs_exprs) |lhs_node| {
+                const var_decl = tree.fullVarDecl(lhs_node) orelse continue;
+                if (var_decl.ast.type_node != 0) continue;
+                try inferAppendTypeStr(builder, var_decl.ast.mut_token + 1);
+            }
+        },
         .if_simple,
         .@"if",
         => {
@@ -444,6 +506,17 @@ fn writeNodeInlayHint(
             const full_case = builder.handle.tree.fullSwitchCase(node).?;
             if (full_case.payload_token) |token| try inferAppendTypeStr(builder, token);
         },
+        .@"catch" => {
+            if (!builder.config.inlay_hints_show_variable_type_hints) return;
+
+            const catch_token = main_tokens[node] + 2;
+            if (catch_token < tree.tokens.len and
+                token_tags[catch_token - 1] == .pipe and
+                token_tags[catch_token] == .identifier)
+            {
+                try inferAppendTypeStr(builder, catch_token);
+            }
+        },
         .builtin_call_two,
         .builtin_call_two_comma,
         .builtin_call,
@@ -451,21 +524,49 @@ fn writeNodeInlayHint(
         => {
             if (!builder.config.inlay_hints_show_parameter_name or !builder.config.inlay_hints_show_builtin) return;
 
+            const name = tree.tokenSlice(main_tokens[node]);
+            if (name.len < 2 or excluded_builtins_set.has(name[1..])) return;
+
             var buffer: [2]Ast.Node.Index = undefined;
             const params = ast.builtinCallParams(tree, node, &buffer).?;
 
             if (params.len == 0) return;
 
-            const name = tree.tokenSlice(main_tokens[node]);
-
-            outer: for (data.builtins) |builtin| {
+            for (data.builtins) |builtin| {
                 if (!std.mem.eql(u8, builtin.name, name)) continue;
 
-                for (inlay_hints_exclude_builtins) |builtin_name| {
-                    if (std.mem.eql(u8, builtin_name, name)) break :outer;
-                }
-
                 try writeBuiltinHint(builder, params, builtin.arguments);
+            }
+        },
+        .struct_init_one,
+        .struct_init_one_comma,
+        .struct_init_dot_two,
+        .struct_init_dot_two_comma,
+        .struct_init_dot,
+        .struct_init_dot_comma,
+        .struct_init,
+        .struct_init_comma,
+        => {
+            if (!builder.config.inlay_hints_show_struct_literal_field_type) return;
+            var buffer: [2]Ast.Node.Index = undefined;
+            const struct_init = tree.fullStructInit(&buffer, node).?;
+            for (struct_init.ast.fields) |value_node| { // the node of `value` in `.name = value`
+                const name_token = tree.firstToken(value_node) - 2; // math our way two token indexes back to get the `name`
+                const name_loc = offsets.tokenToLoc(tree, name_token);
+                const name = offsets.locToSlice(tree.source, name_loc);
+                const decl = (try builder.analyser.getSymbolEnumLiteral(builder.arena, builder.handle, name_loc.start, name)) orelse continue;
+                const ty = try decl.resolveType(builder.analyser) orelse continue;
+                const type_str: []const u8 = try std.fmt.allocPrint(
+                    builder.arena,
+                    "{}",
+                    .{ty.fmt(builder.analyser, .{ .truncate_container_decls = true })},
+                );
+                if (type_str.len == 0) continue;
+                try appendTypeHintString(
+                    builder,
+                    name_token,
+                    type_str,
+                );
             }
         },
         else => {},

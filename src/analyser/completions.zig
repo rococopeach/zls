@@ -11,10 +11,8 @@ pub fn dotCompletions(
     completions: *std.ArrayListUnmanaged(types.CompletionItem),
     ip: *InternPool,
     index: InternPool.Index,
-    node: ?Ast.Node.Index,
 ) error{OutOfMemory}!void {
     std.debug.assert(index != .none);
-    _ = node;
 
     const val: InternPool.Index = index;
     const ty: InternPool.Index = ip.typeOf(index);
@@ -40,7 +38,7 @@ pub fn dotCompletions(
                         try completions.ensureUnusedCapacity(arena, names.len);
                         for (names) |name| {
                             completions.appendAssumeCapacity(.{
-                                .label = try std.fmt.allocPrint(arena, "{}", .{name.fmt(&ip.string_pool)}),
+                                .label = try std.fmt.allocPrint(arena, "{}", .{ip.fmtId(name)}),
                                 .kind = .Constant,
                                 .detail = try std.fmt.allocPrint(arena, "error.{}", .{ip.fmtId(name)}),
                             });
@@ -86,7 +84,7 @@ pub fn dotCompletions(
             try completions.append(arena, .{
                 .label = "len",
                 .kind = .Field,
-                .detail = try std.fmt.allocPrint(arena, "const len: usize = {d}", .{array_info.len}),
+                .detail = try std.fmt.allocPrint(arena, "usize = {d}", .{array_info.len}),
             });
         },
         .struct_type => |struct_index| {
@@ -252,14 +250,14 @@ test "dotCompletions - array types" {
         .{
             .label = "len",
             .kind = .Field,
-            .detail = "const len: usize = 3",
+            .detail = "usize = 3",
         },
     });
     try testCompletion(&ip, try ip.getUnknown(gpa, @"[1]u8"), &.{
         .{
             .label = "len",
             .kind = .Field,
-            .detail = "const len: usize = 1",
+            .detail = "usize = 1",
         },
     });
 }
@@ -345,7 +343,7 @@ test "dotCompletions - single pointer indirection" {
         .{
             .label = "len",
             .kind = .Field,
-            .detail = "const len: usize = 1",
+            .detail = "usize = 1",
         },
     });
     try testCompletion(&ip, try ip.getUnknown(gpa, @"**[1]u32"), &.{});
@@ -364,7 +362,7 @@ fn testCompletion(
     const arena = arena_allocator.allocator();
     var completions = std.ArrayListUnmanaged(types.CompletionItem){};
 
-    try dotCompletions(arena, &completions, ip, index, null);
+    try dotCompletions(arena, &completions, ip, index);
 
     try std.testing.expectEqualDeep(expected, completions.items);
 }

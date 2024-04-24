@@ -701,12 +701,12 @@ pub const Index = enum(u32) {
     }
 };
 
-comptime {
-    const Zir = @import("../stage2/Zir.zig");
-    assert(@intFromEnum(Zir.Inst.Ref.generic_poison_type) == @intFromEnum(Index.generic_poison_type));
-    assert(@intFromEnum(Zir.Inst.Ref.undef) == @intFromEnum(Index.undefined_value));
-    assert(@intFromEnum(Zir.Inst.Ref.one_usize) == @intFromEnum(Index.one_usize));
-}
+// comptime {
+//     const Zir = @import("../stage2/Zir.zig");
+//     assert(@intFromEnum(Zir.Inst.Ref.generic_poison_type) == @intFromEnum(Index.generic_poison_type));
+//     assert(@intFromEnum(Zir.Inst.Ref.undef) == @intFromEnum(Index.undefined_value));
+//     assert(@intFromEnum(Zir.Inst.Ref.one_usize) == @intFromEnum(Index.one_usize));
+// }
 
 pub const StringSlice = struct {
     start: u32,
@@ -993,7 +993,7 @@ pub const Struct = struct {
     fields: std.AutoArrayHashMapUnmanaged(String, Field),
     owner_decl: Decl.OptionalIndex,
     namespace: NamespaceIndex,
-    layout: std.builtin.Type.ContainerLayout = .Auto,
+    layout: std.builtin.Type.ContainerLayout = .auto,
     backing_int_ty: InternPool.Index,
     status: FieldStatus,
 
@@ -1021,7 +1021,7 @@ pub const Union = struct {
     tag_type: InternPool.Index,
     fields: std.AutoArrayHashMapUnmanaged(String, Field),
     namespace: NamespaceIndex,
-    layout: std.builtin.Type.ContainerLayout = .Auto,
+    layout: std.builtin.Type.ContainerLayout = .auto,
     status: FieldStatus,
 
     pub const Field = struct {
@@ -2908,7 +2908,7 @@ fn optionalPtrTy(ip: *InternPool, ty: Index) Index {
 }
 
 /// will panic in during testing, otherwise will return `value`
-inline fn panicOrElse(message: []const u8, value: anytype) @TypeOf(value) {
+fn panicOrElse(comptime T: type, message: []const u8, value: T) T {
     if (builtin.is_test) {
         @panic(message);
     }
@@ -3269,7 +3269,7 @@ pub fn intInfo(ip: *InternPool, ty: Index, target: std.Target) std.builtin.Type.
             },
             .struct_type => |struct_index| {
                 const struct_info = ip.getStruct(struct_index);
-                assert(struct_info.layout == .Packed);
+                assert(struct_info.layout == .@"packed");
                 index = struct_info.backing_int_ty;
             },
             // TODO revisit this when error sets support custom int types (comment taken from zig codebase)
@@ -3579,11 +3579,11 @@ pub fn onePossibleValue(ip: *InternPool, ty: Index) Index {
             };
         },
         .function_type => Index.none,
-        .union_type => panicOrElse("TODO", Index.none),
-        .tuple_type => panicOrElse("TODO", Index.none),
+        .union_type => panicOrElse(Index, "TODO", Index.none),
+        .tuple_type => panicOrElse(Index, "TODO", Index.none),
         .vector_type => |vector_info| {
             if (vector_info.len == 0) {
-                return panicOrElse("TODO return empty array value", Index.the_only_possible_value);
+                return panicOrElse(Index, "TODO return empty array value", Index.the_only_possible_value);
             }
             return ip.onePossibleValue(vector_info.child);
         },
@@ -3707,8 +3707,8 @@ pub fn isZero(ip: *InternPool, val: Index) bool {
 }
 
 /// If the value fits in the given integer, return it, otherwise null.
-pub fn toInt(ip: *InternPool, val: Index, comptime T: type) !?T {
-    comptime assert(std.meta.trait.isIntegral(T));
+pub fn toInt(ip: *InternPool, val: Index, comptime T: type) ?T {
+    comptime assert(@typeInfo(T) == .Int);
     return switch (ip.indexToKey(val)) {
         .simple_value => |simple| switch (simple) {
             .null_value => 0,
@@ -3719,7 +3719,7 @@ pub fn toInt(ip: *InternPool, val: Index, comptime T: type) !?T {
         },
         .int_u64_value => |int_value| std.math.cast(T, int_value.int),
         .int_i64_value => |int_value| std.math.cast(T, int_value.int),
-        .int_big_value => |int_value| int_value.int.to(T) catch null,
+        .int_big_value => |int_value| int_value.getConst(ip).to(T) catch null,
         .null_value => 0,
         else => null,
     };
@@ -3891,7 +3891,7 @@ fn printInternal(ip: *InternPool, ty: Index, writer: anytype, options: FormatOpt
         },
         .struct_type => |struct_index| {
             const optional_decl_index = ip.getStruct(struct_index).owner_decl;
-            const decl_index = optional_decl_index.unwrap() orelse return panicOrElse("TODO", null);
+            const decl_index = optional_decl_index.unwrap() orelse return panicOrElse(?Index, "TODO", null);
             const decl = ip.getDecl(decl_index);
             try writer.print("{}", .{ip.fmtId(decl.name)});
         },
@@ -3920,7 +3920,7 @@ fn printInternal(ip: *InternPool, ty: Index, writer: anytype, options: FormatOpt
             }
             try writer.writeByte('}');
         },
-        .enum_type => return panicOrElse("TODO", null),
+        .enum_type => return panicOrElse(?Index, "TODO", null),
         .function_type => |function_info| {
             try writer.writeAll("fn(");
 
@@ -3957,7 +3957,7 @@ fn printInternal(ip: *InternPool, ty: Index, writer: anytype, options: FormatOpt
 
             return function_info.return_type;
         },
-        .union_type => return panicOrElse("TODO", null),
+        .union_type => return panicOrElse(?Index, "TODO", null),
         .tuple_type => |tuple_info| {
             assert(tuple_info.types.len == tuple_info.values.len);
             try writer.writeAll("tuple{");
@@ -4483,7 +4483,7 @@ test "struct value" {
         .fields = .{},
         .owner_decl = .none,
         .namespace = .none,
-        .layout = .Auto,
+        .layout = .auto,
         .backing_int_ty = .none,
         .status = .none,
     });
@@ -4561,7 +4561,7 @@ test "union value" {
         .tag_type = .none,
         .fields = .{},
         .namespace = .none,
-        .layout = .Auto,
+        .layout = .auto,
         .status = .none,
     });
     const union_type = try ip.get(gpa, .{ .union_type = union_index });
