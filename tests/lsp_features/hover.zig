@@ -92,6 +92,85 @@ test "literal" {
     );
 }
 
+test "integer literal" {
+    try testHover(
+        \\const foo = 4<cursor>2;
+    ,
+        \\| Base | Value    |
+        \\| ---- | -------- |
+        \\| BIN  | 0b101010 |
+        \\| OCT  | 0o52     |
+        \\| DEC  | 42       |
+        \\| HEX  | 0x2A     |
+    );
+    try testHover(
+        \\const foo = -4<cursor>2;
+    ,
+        \\| Base | Value     |
+        \\| ---- | --------- |
+        \\| BIN  | -0b101010 |
+        \\| OCT  | -0o52     |
+        \\| DEC  | -42       |
+        \\| HEX  | -0x2A     |
+    );
+    try testHover(
+        \\const foo = 0b101<cursor>010;
+    ,
+        \\| Base | Value    |
+        \\| ---- | -------- |
+        \\| BIN  | 0b101010 |
+        \\| OCT  | 0o52     |
+        \\| DEC  | 42       |
+        \\| HEX  | 0x2A     |
+    );
+    try testHover(
+        \\const foo = -0b101<cursor>010;
+    ,
+        \\| Base | Value     |
+        \\| ---- | --------- |
+        \\| BIN  | -0b101010 |
+        \\| OCT  | -0o52     |
+        \\| DEC  | -42       |
+        \\| HEX  | -0x2A     |
+    );
+    try testHover(
+        \\const foo = 0x2<cursor>A;
+    ,
+        \\| Base | Value    |
+        \\| ---- | -------- |
+        \\| BIN  | 0b101010 |
+        \\| OCT  | 0o52     |
+        \\| DEC  | 42       |
+        \\| HEX  | 0x2A     |
+    );
+    try testHover(
+        \\const foo = -0x2<cursor>A;
+    ,
+        \\| Base | Value     |
+        \\| ---- | --------- |
+        \\| BIN  | -0b101010 |
+        \\| OCT  | -0o52     |
+        \\| DEC  | -42       |
+        \\| HEX  | -0x2A     |
+    );
+    try testHoverWithOptions(
+        \\const foo = 4<cursor>2;
+    ,
+        \\BIN: 0b101010
+        \\OCT: 0o52
+        \\DEC: 42
+        \\HEX: 0x2A
+    , .{ .markup_kind = .plaintext });
+    try testHoverWithOptions(
+        \\const foo = -4<cursor>2;
+    ,
+        \\BIN: -0b101010
+        \\OCT: -0o52
+        \\DEC: -42
+        \\HEX: -0x2A
+    , .{ .markup_kind = .plaintext });
+}
+
 test "string literal" {
     try testHover(
         \\const f<cursor>oo = "ipsum lorem";
@@ -540,6 +619,26 @@ test "function" {
     , .{ .markup_kind = .plaintext });
 }
 
+test "function parameter" {
+    try testHover(
+        \\fn foo(
+        \\    /// hello world
+        \\    <cursor>a: u32,
+        \\) u32 {
+        \\    return a;
+        \\}
+    ,
+        \\```zig
+        \\a: u32
+        \\```
+        \\```zig
+        \\(u32)
+        \\```
+        \\
+        \\ hello world
+    );
+}
+
 test "optional" {
     try testHover(
         \\const S = struct { a: i32 };
@@ -553,6 +652,71 @@ test "optional" {
         \\```
         \\
         \\Go to [S](file:///test.zig#L1)
+    );
+
+    try testHover(
+        \\const foo: ?i32 = 5;
+        \\const b<cursor>ar = foo orelse 0;
+    ,
+        \\```zig
+        \\const bar = foo orelse 0
+        \\```
+        \\```zig
+        \\(i32)
+        \\```
+    );
+
+    try testHover(
+        \\const foo: ?i32 = 5;
+        \\const b<cursor>ar = foo orelse foo;
+    ,
+        \\```zig
+        \\const bar = foo orelse foo
+        \\```
+        \\```zig
+        \\(?i32)
+        \\```
+    );
+
+    try testHover(
+        \\const foo: ?i32 = 5;
+        \\const b<cursor>ar = foo orelse unreachable;
+    ,
+        \\```zig
+        \\const bar = foo orelse unreachable
+        \\```
+        \\```zig
+        \\(i32)
+        \\```
+    );
+
+    try testHover(
+        \\fn foo(a: ?i32) void {
+        \\    const b<cursor>ar = a orelse return;
+        \\}
+    ,
+        \\```zig
+        \\const bar = a orelse return
+        \\```
+        \\```zig
+        \\(i32)
+        \\```
+    );
+
+    try testHover(
+        \\fn foo() void {
+        \\    const array: [1]?i32 = [1]?i32{ 4 };
+        \\    for (array) |elem| {
+        \\        const b<cursor>ar = elem orelse continue;
+        \\    }
+        \\}
+    ,
+        \\```zig
+        \\const bar = elem orelse continue
+        \\```
+        \\```zig
+        \\(i32)
+        \\```
     );
 }
 

@@ -922,48 +922,37 @@ pub fn updateConfiguration(server: *Server, new_config: configuration.Configurat
         server.showMessage(.Warning, "zig executable could not be found", .{});
     }
 
-    if (resolve_result.zig_runtime_version) |zig_version| version_check: {
-        // the ZLS version may not be available because it is being resolved with `git` which may fail.
-        const zls_version_string = build_options.precise_version_string orelse break :version_check;
+    switch (resolve_result.build_runner_version) {
+        .resolved, .unresolved_dont_error => {},
+        .unresolved => {
+            const zig_version = resolve_result.zig_runtime_version.?;
+            const zls_version = build_options.version;
 
-        const zls_version = comptime std.SemanticVersion.parse(zls_version_string) catch unreachable;
-        const minimum_runtime_zig_version = comptime std.SemanticVersion.parse(build_options.minimum_runtime_zig_version_string) catch unreachable;
+            const zig_version_is_tagged = zig_version.pre == null and zig_version.build == null;
+            const zls_version_is_tagged = zls_version.pre == null and zls_version.build == null;
 
-        const zig_version_is_tagged = zig_version.pre == null and zig_version.build == null;
-        const zls_version_is_tagged = zls_version.pre == null and zls_version.build == null;
-
-        const zig_version_simple = std.SemanticVersion{ .major = zig_version.major, .minor = zig_version.minor, .patch = 0 };
-        const zls_version_simple = std.SemanticVersion{ .major = zls_version.major, .minor = zls_version.minor, .patch = 0 };
-
-        const are_different_tagged_versions = zig_version_is_tagged and zls_version_is_tagged and zig_version_simple.order(zls_version_simple) != .eq;
-
-        if (zig_version_is_tagged != zls_version_is_tagged or are_different_tagged_versions) {
-            if (zig_version_is_tagged) {
+            if (zig_builtin.is_test) {
+                // This has test coverage in `src/build_runner/BuildRunnerVersion.zig`
+            } else if (zig_version_is_tagged) {
                 server.showMessage(
                     .Warning,
-                    "Zig {} should be used with ZLS {} but ZLS {s} is being used.",
-                    .{ zig_version, zig_version_simple, zls_version_string },
+                    "Zig {} should be used with ZLS {}.{}.* but ZLS {} is being used.",
+                    .{ zig_version, zig_version.major, zig_version.minor, zls_version },
                 );
             } else if (zls_version_is_tagged) {
                 server.showMessage(
                     .Warning,
-                    "ZLS {s} should be used with Zig {} but found Zig {}. ",
-                    .{ zls_version_string, zls_version_simple, zig_version },
+                    "ZLS {} should be used with Zig {}.{}.* but found Zig {}.",
+                    .{ zls_version, zls_version.major, zls_version.minor, zig_version },
                 );
-            } else unreachable;
-            break :version_check;
-        }
-
-        if (zig_version.order(minimum_runtime_zig_version) == .lt) {
-            // don't report a warning when using a Zig version that has a matching build runner
-            if (resolve_result.build_runner_version != null and resolve_result.build_runner_version.?.isTaggedRelease()) break :version_check;
-            server.showMessage(
-                .Warning,
-                "ZLS {s} requires at least Zig {} but got Zig {}. Update Zig to avoid unexpected behavior.",
-                .{ zls_version_string, minimum_runtime_zig_version, zig_version },
-            );
-            break :version_check;
-        }
+            } else {
+                server.showMessage(
+                    .Warning,
+                    "ZLS {} requires at least Zig {s} but got Zig {}. Update Zig to avoid unexpected behavior.",
+                    .{ zls_version, build_options.minimum_runtime_zig_version_string, zig_version },
+                );
+            }
+        },
     }
 
     if (server.config.prefer_ast_check_as_child_process) {
@@ -991,9 +980,7 @@ fn validateConfiguration(server: *Server, config: *configuration.Configuration) 
                 break :blk .{ .kind = .file, .is_accessible = true };
             } else if (std.mem.eql(u8, field_name, "zig_lib_path")) {
                 break :blk .{ .kind = .directory, .is_accessible = true };
-            } else if (std.mem.eql(u8, field_name, "global_cache_path") or
-                std.mem.eql(u8, field_name, "build_runner_global_cache_path"))
-            {
+            } else if (std.mem.eql(u8, field_name, "global_cache_path")) {
                 break :blk .{ .kind = .directory, .is_accessible = false };
             } else {
                 @compileError(std.fmt.comptimePrint(
@@ -1077,7 +1064,12 @@ fn validateConfiguration(server: *Server, config: *configuration.Configuration) 
 const ResolveConfigurationResult = struct {
     zig_env: ?std.json.Parsed(configuration.Env),
     zig_runtime_version: ?std.SemanticVersion,
-    build_runner_version: ?BuildRunnerVersion,
+    build_runner_version: union(enum) {
+        /// no suitable build runner could be resolved based on the `zig_runtime_version`
+        resolved: BuildRunnerVersion,
+        unresolved,
+        unresolved_dont_error,
+    },
 
     fn deinit(result: ResolveConfigurationResult) void {
         if (result.zig_env) |parsed| parsed.deinit();
@@ -1093,7 +1085,7 @@ fn resolveConfiguration(
     var result: ResolveConfigurationResult = .{
         .zig_env = null,
         .zig_runtime_version = null,
-        .build_runner_version = null,
+        .build_runner_version = .unresolved_dont_error,
     };
     errdefer result.deinit();
 
@@ -1128,10 +1120,6 @@ fn resolveConfiguration(
             }
         }
 
-        if (config.build_runner_global_cache_path == null) {
-            config.build_runner_global_cache_path = try config_arena.dupe(u8, env.value.global_cache_dir);
-        }
-
         result.zig_runtime_version = std.SemanticVersion.parse(env.value.version) catch |err| {
             log.err("zig env returned a zig version that is an invalid semantic version: {}", .{err});
             break :blk;
@@ -1159,35 +1147,41 @@ fn resolveConfiguration(
         const global_cache_path = config.global_cache_path orelse break :blk;
         const zig_version = result.zig_runtime_version orelse break :blk;
 
-        result.build_runner_version = BuildRunnerVersion.selectBuildRunnerVersion(zig_version) orelse break :blk;
+        const build_runner_version = BuildRunnerVersion.selectBuildRunnerVersion(zig_version) orelse {
+            result.build_runner_version = .unresolved;
+            break :blk;
+        };
+        const build_runner_source = build_runner_version.getBuildRunnerFile();
+        const build_runner_hash = build_runner_version.getBuildRunnerFileHash();
 
-        const build_runner_file_name = try std.fmt.allocPrint(allocator, "build_runner_{s}.zig", .{@tagName(result.build_runner_version.?)});
-        defer allocator.free(build_runner_file_name);
+        const cache_path = try std.fs.path.join(allocator, &.{ global_cache_path, "build_runner", &std.fmt.bytesToHex(build_runner_hash, .lower) });
+        defer allocator.free(cache_path);
 
-        const build_runner_path = try std.fs.path.join(config_arena, &[_][]const u8{ global_cache_path, build_runner_file_name });
+        std.debug.assert(std.fs.path.isAbsolute(cache_path));
+        var cache_dir = std.fs.cwd().makeOpenPath(cache_path, .{}) catch |err| {
+            log.err("failed to open directory '{s}': {}", .{ cache_path, err });
+            break :blk;
+        };
+        defer cache_dir.close();
 
-        const build_config_path = try std.fs.path.join(allocator, &[_][]const u8{ global_cache_path, "BuildConfig.zig" });
-        defer allocator.free(build_config_path);
-
-        std.fs.cwd().writeFile2(.{
-            .sub_path = build_config_path,
+        cache_dir.writeFile(.{
+            .sub_path = "BuildConfig.zig",
             .data = @embedFile("build_runner/BuildConfig.zig"),
         }) catch |err| {
-            log.err("failed to write file '{s}': {}", .{ build_config_path, err });
+            log.err("failed to write file '{s}/BuildConfig.zig': {}", .{ cache_path, err });
             break :blk;
         };
 
-        std.fs.cwd().writeFile2(.{
-            .sub_path = build_runner_path,
-            .data = switch (result.build_runner_version.?) {
-                inline else => |tag| @embedFile("build_runner/" ++ @tagName(tag) ++ ".zig"),
-            },
+        cache_dir.writeFile(.{
+            .sub_path = "build_runner.zig",
+            .data = build_runner_source,
         }) catch |err| {
-            log.err("failed to write file '{s}': {}", .{ build_config_path, err });
+            log.err("failed to write file '{s}/build_runner.zig': {}", .{ cache_path, err });
             break :blk;
         };
 
-        config.build_runner_path = build_runner_path;
+        config.build_runner_path = try std.fs.path.join(config_arena, &.{ cache_path, "build_runner.zig" });
+        result.build_runner_version = .{ .resolved = build_runner_version };
     }
 
     if (config.builtin_path == null) blk: {
@@ -1215,7 +1209,7 @@ fn resolveConfiguration(
 
         const builtin_path = try std.fs.path.join(config_arena, &.{ global_cache_path, "builtin.zig" });
 
-        std.fs.cwd().writeFile2(.{
+        std.fs.cwd().writeFile(.{
             .sub_path = builtin_path,
             .data = run_result.stdout,
         }) catch |err| {

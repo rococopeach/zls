@@ -25,8 +25,8 @@ fn logFn(
     const scope_txt = comptime @tagName(scope);
 
     const stderr = std.io.getStdErr().writer();
-    std.debug.getStderrMutex().lock();
-    defer std.debug.getStderrMutex().unlock();
+    std.debug.lockStdErr();
+    defer std.debug.unlockStdErr();
 
     stderr.print("{s:<5}: ({s:^6}): ", .{ level_txt, if (comptime std.mem.startsWith(u8, scope_txt, "zls_")) scope_txt[4..] else scope_txt }) catch return;
     stderr.print(format, args) catch return;
@@ -65,7 +65,6 @@ fn parseArgs(allocator: std.mem.Allocator) !ParseArgsResult {
     const ArgId = enum {
         help,
         version,
-        @"minimum-runtime-version",
         @"compiler-version",
         @"enable-debug-log",
         @"enable-message-tracing",
@@ -84,7 +83,6 @@ fn parseArgs(allocator: std.mem.Allocator) !ParseArgsResult {
         var cmd_infos: InfoMap = InfoMap.init(.{
             .help = "Prints this message.",
             .version = "Prints the version.",
-            .@"minimum-runtime-version" = "Prints the minimum Zig version that is need to run ZLS.",
             .@"compiler-version" = "Prints the compiler version with which the server was compiled.",
             .@"enable-debug-log" = "Enables debug logs.",
             .@"enable-message-tracing" = "Enables message tracing.",
@@ -134,7 +132,6 @@ fn parseArgs(allocator: std.mem.Allocator) !ParseArgsResult {
         switch (id) {
             .help,
             .version,
-            .@"minimum-runtime-version",
             .@"compiler-version",
             .@"enable-debug-log",
             .@"enable-message-tracing",
@@ -156,10 +153,6 @@ fn parseArgs(allocator: std.mem.Allocator) !ParseArgsResult {
     }
     if (specified.get(.version)) {
         try stdout.writeAll(zls.build_options.version_string ++ "\n");
-        return result;
-    }
-    if (specified.get(.@"minimum-runtime-version")) {
-        try stdout.writeAll(zls.build_options.minimum_runtime_zig_version_string ++ "\n");
         return result;
     }
     if (specified.get(.@"compiler-version")) {
